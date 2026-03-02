@@ -1,0 +1,10 @@
+[project]
+name = "dataesr-mcp"
+version = "0.1.0"
+description = "Model Context Protocol (MCP) server for interacting with dataesr resources"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.26.0",
+    "requests>=2.32.5",
+]
