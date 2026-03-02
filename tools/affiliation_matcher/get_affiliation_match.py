@@ -4,13 +4,11 @@ import requests
 
 
 def register_get_affiliation_match_tool(mcp: FastMCP):
-    """Register the affiliation matcher tool"""
-
     @mcp.tool()
     async def get_affiliation_match(
         affiliation: str, reference: Literal["country", "grid", "ror", "rnsr", "paysage"]
     ) -> str:
-        """Get the match of an affiliation string to a reference system including country, grid, ROR, RNSR, paysage"""
+        """Get the ids of an affiliation string in a reference system including country, grid, ROR, RNSR, paysage"""
         payload = {
             "query": affiliation,
             "type": reference,
