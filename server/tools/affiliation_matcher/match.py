@@ -1,11 +1,12 @@
 from mcp.server.fastmcp import FastMCP
 from typing import Literal
 from pydantic import Field
-import requests
+import httpx
 from .helpers.schemas import AffiliationMatch
 
 
-def register_get_affiliation_match_tool(mcp: FastMCP):
+def register(mcp: FastMCP):
+
     @mcp.tool()
     async def get_affiliation_match(
         affiliation: str = Field(description="Affiliation string to look for a match"),
@@ -19,7 +20,8 @@ def register_get_affiliation_match_tool(mcp: FastMCP):
             "query": affiliation,
             "type": reference,
         }
-        response = requests.post("https://affiliation-matcher.staging.dataesr.ovh/match", json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return AffiliationMatch(results=data["results"], enriched_results=data["enriched_results"])
+        with httpx.Client() as client:
+            response = client.post("https://affiliation-matcher.staging.dataesr.ovh/match", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return AffiliationMatch(results=data["results"], enriched_results=data["enriched_results"])
