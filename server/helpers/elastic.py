@@ -1,5 +1,8 @@
 import os
 import httpx
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 ES_URL = os.environ.get("ES_URL")
 ES_API_KEY = os.environ.get("ES_API_KEY")
@@ -15,6 +18,7 @@ def es_headers() -> dict:
 
 def es_search(query: dict) -> dict:
     url = f"{ES_URL}/{ES_INDEX}/_search"
+    logger.debug(f"{url=}")
     with httpx.Client() as client:
         response = client.post(url, headers=es_headers(), json=query, timeout=30)
         response.raise_for_status()
