@@ -2,43 +2,47 @@ import json
 from typing import Annotated
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
-from helpers.elastic import es_search
-from logger import get_logger
+from helpers.elastic import es_search, es_validate_fields
+from helpers.logger import get_logger
 
 logger = get_logger(__name__)
 
-def register(mcp: FastMCP):
 
-    @mcp.tool()
-    def search_publications(
+def register(mcp: FastMCP, index: str, description: str):
+
+    @mcp.tool(name=f"{index}_search")
+    async def search(
         query: Annotated[
             dict,
             Field(
                 description=(
-                    "A complete Elasticsearch request body. Example: "
-                    '{"query": {"match": {"title.default": "climate"}}, '
-                    '"_source": ["title.default", "year", "isOa"], "size": 10}'
+                    f"A complete Elasticsearch request body for the {index} index. "
+                    'Example: {"query": {"match": {"title.default": "climate change"}}, "_source": ["title.default", "year"], "fields": ["title.default^2", "abstract.*^1"], "size": 10}'
+                    'Example for aggregation: {"aggs": {"projects": {"terms": {"field": "projects.id.keyword"}}}, "size": 0}'
                 )
             ),
         ],
     ) -> str:
-        """
-        Execute an Elasticsearch query against the scanr-publications index.
-        Call get_schema() first to know available fields and their types.
+        f"""
+        Execute an Elasticsearch query against the {index} index.
+        Index content: {description}
+        Call {index}_get_schema() first to discover available fields.
 
         Tips:
-        - Use match/multi_match for text fields, term/terms for keyword fields.
-        - Always set _source to only the fields you need (keeps responses small).
-        - Use 'size' to control result count (default ES is 10, max recommended 50).
-        - For aggregations (counts, stats), set size: 0 and use the 'aggs' key.
-        - For sorting, 'year' and 'cited_by_counts_by_year.*' are useful numeric fields.
+            - Use match/multi_match for text fields, term/terms for keyword fields.
+            - Always set _source to only the fields you need (keeps responses small).
+            - Use 'fields' to specify the fields to search in. You can boost the fields by using the ^ operator.
+            - Use 'size' to control result count (default ES is 10, max recommended 50).
+            - Set 'size' to 0 for aggregations (counts and stats)
+            - If invalid fields are detected, the tool will return an error message with the list of invalid fields.
         """
-        logger.debug(f"{query=}")
-        data = es_search(query)
+        es_validate_fields(query, index, raise_error=True)
+        data = es_search(index, query)
         total = data.get("hits", {}).get("total", {}).get("value", 0)
         hits = [hit["_source"] for hit in data.get("hits", {}).get("hits", [])]
         result = {"total": total, "hits": hits}
         if "aggregations" in data:
-            result["aggregations"] = data["aggregations"]
+            result = {"aggregations": data["aggregations"]}
+        logger.debug(f"{query=}")
         logger.debug(f"{result=}")
         return json.dumps(result, indent=2)
