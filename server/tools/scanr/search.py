@@ -8,10 +8,25 @@ from helpers.logger import get_logger
 logger = get_logger(__name__)
 
 
-def register(mcp: FastMCP, index: str, description: str):
+def register(mcp: FastMCP, index: str, index_description: str):
 
-    @mcp.tool(name=f"{index}_search")
-    async def search(
+    @mcp.tool(
+        name=f"{index}_search",
+        description=f"""
+        Execute an Elasticsearch query against the {index} index.
+        Index content: {index_description}
+        Call {index}_get_schema() first to discover available fields.
+
+        Tips:
+            - Use match/multi_match for text fields, term/terms for keyword fields.
+            - Always set _source to only the fields you need (keeps responses small).
+            - Use 'fields' to specify the fields to search in. You can boost the fields by using the ^ operator.
+            - Use 'size' to control result count (default ES is 10, max recommended 50).
+            - Set 'size' to 0 for aggregations (counts and stats)
+            - If invalid fields are detected, the tool will return an error message with the list of invalid fields.
+        """,
+    )
+    def search(
         query: Annotated[
             dict,
             Field(
@@ -25,16 +40,6 @@ def register(mcp: FastMCP, index: str, description: str):
     ) -> str:
         f"""
         Execute an Elasticsearch query against the {index} index.
-        Index content: {description}
-        Call {index}_get_schema() first to discover available fields.
-
-        Tips:
-            - Use match/multi_match for text fields, term/terms for keyword fields.
-            - Always set _source to only the fields you need (keeps responses small).
-            - Use 'fields' to specify the fields to search in. You can boost the fields by using the ^ operator.
-            - Use 'size' to control result count (default ES is 10, max recommended 50).
-            - Set 'size' to 0 for aggregations (counts and stats)
-            - If invalid fields are detected, the tool will return an error message with the list of invalid fields.
         """
         es_validate_fields(query, index, raise_error=True)
         data = es_search(index, query)
