@@ -1,4 +1,3 @@
-import json
 from mcp.server.fastmcp import FastMCP
 from tools.scanr import schema, search
 
@@ -23,40 +22,50 @@ def register(mcp: FastMCP):
     @mcp.tool(name="scanr_search")
     def scanr_search(
         query: str,
-    ) -> str:
+    ) -> dict:
         """
         ALWAYS call this tool first before any scanR search.
         It returns the mandatory workflow to follow for any scanR query.
         Do not skip this step.
         """
-        return json.dumps(
-            {
-                "workflow": [
-                    "Step 1 — Identify relevant indexes: based on the user query, "
-                    "pick one or more indexes from the 'available_indexes' list below.",
-                    "Step 2 — Get schema: for each selected index, call "
-                    "{index}_get_schema to retrieve the exact list of available fields. "
-                    "Never skip this step, never guess field names.",
-                    "Step 3 — Build query: construct a valid Elasticsearch query using "
-                    "ONLY fields returned by {index}_get_schema. "
-                    "Use match/multi_match for text fields, term/terms for keyword fields. "
-                    "Always set _source to only the fields you need.",
-                    "Step 4 — Execute search: call {index}_search with your query.",
-                    "Step 5 — Evaluate results: "
-                    "if results are empty or an 'unknown_fields' error is returned, "
-                    "go back to Step 2, re-read the schema carefully and fix your query. "
-                    "Never return empty results without retrying at least once.",
-                    "Step 6 — Synthesize: return a clear structured answer to the user " "based on the search results.",
-                ],
-                "rules": [
-                    "Never call {index}_search before calling {index}_get_schema",
-                    "Never use field names not present in the schema",
-                    "If an 'unknown_fields' error is returned, you MUST call {index}_get_schema again",
-                    "You may search multiple indexes if the question spans several domains",
-                    "Always prefer specific field matches over generic full-text when possible",
-                ],
-                "available_indexes": INDEXES,
-                "user_query": query,
-            },
-            indent=2,
-        )
+        return {
+            "workflow": [
+                "Step 1 — Identify relevant indexes: based on the user query, "
+                "pick one or more indexes from the 'available_indexes' list below. "
+                "Think about whether the query requires data from multiple indexes.",
+                "Step 2 — Get schema: for each selected index, call "
+                "{index}_get_schema to retrieve the exact list of available fields. "
+                "Never skip this step, never guess field names.",
+                "Step 3 — Build query: construct a valid Elasticsearch query using "
+                "ONLY fields returned by {index}_get_schema. "
+                "Use match/multi_match for text fields, term/terms for keyword fields. "
+                "Always set _source to only the fields you need, INCLUDING any ID fields "
+                "you will need to cross-reference another index.",
+                "Step 4 — Execute search: call {index}_search with your query.",
+                "Step 5 — Cross-index enrichment (if needed): "
+                "if the answer requires data from another index, extract the relevant IDs "
+                "from the results (e.g. organization ID, project ID, person ID) and use them "
+                "to query the other index with a term/terms filter on the ID field. "
+                "Example: find an organization in scanr-organizations, extract its ID, "
+                "then search scanr-publications with a term filter on affiliations.id to get its publications. "
+                "Example: find a project in scanr-projects, extract its ID, "
+                "then search scanr-participants with a term filter on project.id to get its participants.",
+                "Step 6 — Evaluate results: "
+                "if results are empty or an 'invalid_fields' error is returned, "
+                "go back to Step 2, re-read the schema carefully and fix your query. "
+                "Never return empty results without retrying at least once.",
+                "Step 7 — Synthesize: return a clear structured answer to the user "
+                "based on all collected results, merging data across indexes if needed.",
+            ],
+            "rules": [
+                "Never call {index}_search before calling {index}_get_schema",
+                "Never use field names not present in the schema",
+                "If an 'invalid_fields' error is returned, you MUST call {index}_get_schema again",
+                "For cross-index queries, always use term/terms on ID fields — never full-text match on IDs",
+                "When chaining indexes, fetch only the ID fields you need in _source to keep responses small",
+                "You may chain as many indexes as needed to fully answer the question",
+                "Always prefer specific field matches over generic full-text when possible",
+            ],
+            "available_indexes": INDEXES,
+            "user_query": query,
+        }

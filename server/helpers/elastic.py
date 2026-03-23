@@ -6,6 +6,13 @@ from mcp.server.fastmcp.exceptions import FastMCPError
 ES_URL = os.environ.get("ES_URL")
 ES_API_KEY = os.environ.get("ES_API_KEY")
 
+ES_ERROR_HINTS = {
+    "parsing_exception": "The query syntax is invalid. Check the query structure.",
+    "illegal_argument_exception": "A field type mismatch — check field types with get_schema (e.g. using term on a text field).",
+    "query_shard_exception": "A field type mismatch or bad query clause. Check field types with get_schema.",
+    "action_request_validation_exception": "Missing or invalid parameter in the query body.",
+}
+
 
 def es_index_clean(index: str) -> str:
     return index.replace("_", "-")
@@ -26,7 +33,26 @@ def es_search(index: str, query: dict) -> dict:
     url = f"{ES_URL}/{es_index}/_search"
     with httpx.Client() as client:
         response = client.post(url, headers=es_headers(), json=query, timeout=30)
-        response.raise_for_status()
+        if not response.is_success:
+            try:
+                body = response.json()
+                error_type = body.get("error", {}).get("type", f"http_{response.status_code}")
+                reason = (
+                    body.get("error", {}).get("root_cause", [{}])[0].get("reason")
+                    or body.get("error", {}).get("reason")
+                    or response.text
+                )
+            except Exception:
+                error_type = f"http_{response.status_code}"
+                reason = response.text
+            hint = ES_ERROR_HINTS.get(error_type, "Fix the query and try again.")
+            raise FastMCPError(
+                {
+                    "error": error_type,
+                    "message": reason,
+                    "hint": hint,
+                }
+            )
         return response.json()
 
 
@@ -87,6 +113,9 @@ def _flatten_mapping(properties: dict, prefix: str = "") -> dict:
     fields = {}
     for field_name, field_def in properties.items():
         full_path = f"{prefix}.{field_name}" if prefix else field_name
+        # skip denormalized fields
+        if "denormalized" in full_path:
+            continue
         if field_def.get("type"):
             entry = {"type": field_def["type"]}
             if "keyword" in field_def.get("fields", {}):

@@ -1,4 +1,3 @@
-import json
 from typing import Annotated
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
@@ -23,7 +22,6 @@ def register(mcp: FastMCP, index: str, index_description: str):
             - Use 'fields' to specify the fields to search in. You can boost the fields by using the ^ operator.
             - Use 'size' to control result count (default ES is 10, max recommended 50).
             - Set 'size' to 0 for aggregations (counts and stats)
-            - If invalid fields are detected, the tool will return an error message with the list of invalid fields.
         """,
     )
     def search(
@@ -37,7 +35,7 @@ def register(mcp: FastMCP, index: str, index_description: str):
                 )
             ),
         ],
-    ) -> str:
+    ) -> dict:
         f"""
         Execute an Elasticsearch query against the {index} index.
         """
@@ -50,4 +48,4 @@ def register(mcp: FastMCP, index: str, index_description: str):
             result = {"aggregations": data["aggregations"]}
         logger.debug(f"{query=}")
         logger.debug(f"{result=}")
-        return json.dumps(result, indent=2)
+        return result

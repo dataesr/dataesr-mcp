@@ -1,7 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from helpers.elastic import es_get_flat_mapping
 from helpers.logger import get_logger
-import json
 
 logger = get_logger(__name__)
 
@@ -26,10 +25,10 @@ def register(mcp: FastMCP, index: str, index_description: str):
         - if "keyword": true → a .keyword sub-field exists for aggregations/exact match
         """,
     )
-    def get_schema() -> str:
+    def get_schema() -> dict:
         f"""
         Get simplified schema for the {index} Elasticsearch index.
         """
         fields = es_get_flat_mapping(index)
         logger.debug(f"{fields=}")
-        return json.dumps({"index": index, "fields": fields}, indent=2)
+        return {"index": index, "fields": fields}
