@@ -1,5 +1,7 @@
+from typing import Annotated
+from pydantic import Field
 from mcp.server.fastmcp import FastMCP
-from tools.scanr import schema, search
+from tools.scanr import schema, search, resolve
 
 INDEXES = {
     "scanr_publications": "Scientific publications (articles, theses, conference papers). One document is one publication.",
@@ -17,11 +19,12 @@ def register(mcp: FastMCP):
     for index, index_description in INDEXES.items():
         schema.register(mcp, index, index_description)
         search.register(mcp, index, index_description)
+        resolve.register(mcp, index, index_description)
 
     # register orchestrator
     @mcp.tool(name="scanr_search")
     def scanr_search(
-        query: str,
+        query: Annotated[str, Field(description="The user query.")],
     ) -> dict:
         """
         ALWAYS call this tool first before any scanR search.
@@ -41,15 +44,13 @@ def register(mcp: FastMCP):
                 "Use match/multi_match for text fields, term/terms for keyword fields. "
                 "Always set _source to only the fields you need, INCLUDING any ID fields "
                 "you will need to cross-reference another index.",
-                "Step 4 — Execute search: call {index}_search with your query.",
-                "Step 5 — Cross-index enrichment (if needed): "
-                "if the answer requires data from another index, extract the relevant IDs "
-                "from the results (e.g. organization ID, project ID, person ID) and use them "
-                "to query the other index with a term/terms filter on the ID field. "
-                "Example: find an organization in scanr-organizations, extract its ID, "
-                "then search scanr-publications with a term filter on affiliations.id to get its publications. "
-                "Example: find a project in scanr-projects, extract its ID, "
-                "then search scanr-participants with a term filter on project.id to get its participants.",
+                "Step 4 — Cross-index enrichment (if needed): "
+                "if the answer requires data from another index, first use the "
+                "{index}_resolve tool to get the relevant IDs for the entities you need.",
+                'WRONG: {"match": {"affiliations.name": "Sorbonne"}} '
+                "RIGHT: First search scanr_organizations_resolve for 'Sorbonne', get id='org123', "
+                'then search scanr_publications_search with {"term": {"affiliations.id": "org123"}} ',
+                "Step 5 — Execute search: call {index}_search with your query.",
                 "Step 6 — Evaluate results: "
                 "if results are empty or an 'invalid_fields' error is returned, "
                 "go back to Step 2, re-read the schema carefully and fix your query. "
@@ -65,6 +66,7 @@ def register(mcp: FastMCP):
                 "When chaining indexes, fetch only the ID fields you need in _source to keep responses small",
                 "You may chain as many indexes as needed to fully answer the question",
                 "Always prefer specific field matches over generic full-text when possible",
+                "When resolve/search returns more than 1 candidate for an entity, ask the user to disambiguate",
             ],
             "available_indexes": INDEXES,
             "user_query": query,

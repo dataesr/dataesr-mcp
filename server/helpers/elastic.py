@@ -5,6 +5,9 @@ from mcp.server.fastmcp.exceptions import FastMCPError
 
 ES_URL = os.environ.get("ES_URL")
 ES_API_KEY = os.environ.get("ES_API_KEY")
+ES_MAX_SIZE = 20
+
+ES_FIELDS_SKIP = ["normalize", "autocomplete", "encode"]
 
 ES_ERROR_HINTS = {
     "parsing_exception": "The query syntax is invalid. Check the query structure.",
@@ -25,14 +28,14 @@ def es_headers() -> dict:
     return headers
 
 
-def es_search(index: str, query: dict) -> dict:
+async def es_search(index: str, query: dict) -> dict:
     """
     Execute an Elasticsearch query against an index.
     """
     es_index = es_index_clean(index)
     url = f"{ES_URL}/{es_index}/_search"
-    with httpx.Client() as client:
-        response = client.post(url, headers=es_headers(), json=query, timeout=30)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=es_headers(), json=query, timeout=30)
         if not response.is_success:
             try:
                 body = response.json()
@@ -68,7 +71,7 @@ def es_get_mapping(index: str) -> dict:
         return response.json()
 
 
-@lru_cache(maxsize=10)
+@lru_cache(maxsize=50)
 def es_get_flat_mapping(index: str) -> dict:
     """
     Get the flat mapping for an index.
@@ -108,13 +111,25 @@ def es_validate_fields(es_query: dict, index: str, raise_error: bool = False) ->
     return invalid_fields
 
 
+def es_validate_size(es_query: dict, index: str, raise_error: bool = False) -> None:
+    """
+    Validate that the size parameter in the query is less than or equal to ES_MAX_SIZE.
+    """
+    if "size" in es_query and es_query["size"] > ES_MAX_SIZE:
+        raise FastMCPError(
+            {
+                "error": "invalid_query",
+                "message": f"The size parameter must be less than or equal to {ES_MAX_SIZE}. For more results, consider using aggregations instead.",
+            }
+        )
+
+
 def _flatten_mapping(properties: dict, prefix: str = "") -> dict:
     """Recursively flatten nested ES properties into dot-notation field paths."""
     fields = {}
     for field_name, field_def in properties.items():
         full_path = f"{prefix}.{field_name}" if prefix else field_name
-        # skip denormalized fields
-        if "denormalized" in full_path:
+        if any(skip in full_path for skip in ES_FIELDS_SKIP):
             continue
         if field_def.get("type"):
             entry = {"type": field_def["type"]}
@@ -126,13 +141,12 @@ def _flatten_mapping(properties: dict, prefix: str = "") -> dict:
     return fields
 
 
-def _extract_fields_from_query(obj, found=None) -> set[str]:
+def _extract_fields_from_query(obj) -> set[str]:
     """
     Recursively walk the ES query dict and extract any field names used.
     Handles: match, term, terms, range, multi_match, _source, sort, aggs, etc.
     """
-    if found is None:
-        found = set()
+    found = set()
 
     if isinstance(obj, dict):
         for key, value in obj.items():
@@ -144,17 +158,22 @@ def _extract_fields_from_query(obj, found=None) -> set[str]:
                         found.update(value.keys())
             elif key == "fields" and isinstance(value, list):
                 found.update(f.split("^")[0].replace(".*", "") for f in value)
-            elif key == "_source" and isinstance(value, list):
-                found.update(value)
+            elif key == "_source":
+                if isinstance(value, list):
+                    found.update(f.split("^")[0].replace(".*", "") for f in value)
+                elif isinstance(value, dict):
+                    for sub in ("includes", "excludes"):
+                        if isinstance(value.get(sub), list):
+                            found.update(v.split("^")[0].replace(".*", "") for v in value[sub])
             elif key == "sort" and isinstance(value, list):
                 for item in value:
                     if isinstance(item, dict):
                         found.update(item.keys())
             else:
-                _extract_fields_from_query(value, found)
+                found.update(_extract_fields_from_query(value))
 
     elif isinstance(obj, list):
         for item in obj:
-            _extract_fields_from_query(item, found)
+            found.update(_extract_fields_from_query(item))
 
     return found

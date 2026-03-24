@@ -30,5 +30,6 @@ def register(mcp: FastMCP, index: str, index_description: str):
         Get simplified schema for the {index} Elasticsearch index.
         """
         fields = es_get_flat_mapping(index)
+        # TODO: return primary fields by default (option to return "full" schema)
         logger.debug(f"{fields=}")
         return {"index": index, "fields": fields}

@@ -1,7 +1,7 @@
 from typing import Annotated
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
-from helpers.elastic import es_search, es_validate_fields
+from helpers.elastic import es_search, es_validate_fields, es_validate_size
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,7 +24,7 @@ def register(mcp: FastMCP, index: str, index_description: str):
             - Set 'size' to 0 for aggregations (counts and stats)
         """,
     )
-    def search(
+    async def search(
         query: Annotated[
             dict,
             Field(
@@ -40,12 +40,16 @@ def register(mcp: FastMCP, index: str, index_description: str):
         Execute an Elasticsearch query against the {index} index.
         """
         es_validate_fields(query, index, raise_error=True)
-        data = es_search(index, query)
+        es_validate_size(query, index, raise_error=True)
+
+        data = await es_search(index, query)
         total = data.get("hits", {}).get("total", {}).get("value", 0)
         hits = [hit["_source"] for hit in data.get("hits", {}).get("hits", [])]
         result = {"total": total, "hits": hits}
         if "aggregations" in data:
-            result = {"aggregations": data["aggregations"]}
+            result["aggregations"] = data["aggregations"]
+
         logger.debug(f"{query=}")
         logger.debug(f"{result=}")
+
         return result
