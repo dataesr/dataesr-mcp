@@ -3,20 +3,21 @@ from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from tools.scanr import schema, search, resolve
 
-INDEXES = {
-    "scanr_publications": "Scientific publications (articles, theses, conference papers). One document is one publication.",
-    "scanr_organizations": "Research organizations and laboratories (universities, CNRS units, etc.). One document is one organization.",
-    "scanr_persons": "Researchers and authors with their affiliations and identifiers (ORCID, IdRef). One document is one person.",
-    "scanr_projects": "Funded research projects (ANR, EU, etc.) with budget and partners. One document is one project.",
-    "scanr_patents": "Patents filed by French research institutions. One document is one patent.",
-    "scanr_participations": "Projects participations by organizations. One document is one project participation by an organization.",
-}
 
+INDEXES = [
+    "scanr_publications",
+    "scanr_persons",
+    "scanr_organizations",
+    "scanr_projects",
+    "scanr_participations",
+    "scanr_patents",
+]
 
 def register(mcp: FastMCP):
 
     # register tools for each index
-    for index, index_description in INDEXES.items():
+    for index in INDEXES:
+        index_description = schema.index_get_description(index)
         schema.register(mcp, index, index_description)
         search.register(mcp, index, index_description)
         resolve.register(mcp, index, index_description)
