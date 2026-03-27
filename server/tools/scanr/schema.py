@@ -2,7 +2,8 @@ import os
 import yaml
 import httpx
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Annotated
+from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from helpers.elastic import es_index_clean
 from helpers.logger import get_logger
@@ -92,6 +93,8 @@ def register(mcp: FastMCP, index: str, index_description: str):
         Fetch and return the simplified field schema for the {index} Elasticsearch index.
         Index content: {index_description}
         Call this before building any query so you know which fields exist and their types.
+        Try first with filter="primary" to get the most relevant fields of the index.
+        If you need more fields, use filter="secondary" or filter="all".
 
         Returns a flat dict of dot-notation field paths with their types, e.g.:
           "title.default": {{"type": "text", "keyword": true}}
@@ -104,11 +107,15 @@ def register(mcp: FastMCP, index: str, index_description: str):
         - if "keyword": true → a .keyword sub-field exists for aggregations/exact match
         """,
     )
-    def get_schema() -> dict:
+    def get_schema(
+        filter: Annotated[
+            Literal["all", "primary", "secondary"],
+            Field(default="primary", description="Filter schema fields"),
+        ],
+    ) -> dict:
         f"""
         Get simplified schema for the {index} Elasticsearch index.
         """
-        # TODO: return primary fields by default (option to return "full" schema)
-        fields = index_get_fields(index)
+        fields = index_get_fields(index, filter)
         logger.debug(f"{fields=}")
         return {"index": index, "fields": fields}
