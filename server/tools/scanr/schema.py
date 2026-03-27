@@ -56,11 +56,11 @@ def field_get_infos(field: dict) -> dict:
     if field.get("description"):
         infos["description"] = field["description"]
     else:
-        if field.get("ai_suggestions", {}).get("description"):
-            infos["description"] = field["ai_suggestions"]["description"]
+        if field.get("ai_suggestion", {}).get("description"):
+            infos["description"] = field["ai_suggestion"]["description"]
     # additional notes
-    if field.get("ai_suggestions", {}).get("notes"):
-        infos["notes"] = field["ai_suggestions"]["notes"]
+    if field.get("ai_suggestion", {}).get("notes"):
+        infos["notes"] = field["ai_suggestion"]["notes"]
     # cross reference
     if field.get("cross_ref"):
         infos["cross_ref"] = field["cross_ref"]
