@@ -1,7 +1,11 @@
 import os
 import httpx
+import copy
 from functools import lru_cache
 from mcp.server.fastmcp.exceptions import FastMCPError
+from helpers.logger import get_logger
+
+logger = get_logger(__name__)
 
 ES_URL = os.environ.get("ES_URL")
 ES_API_KEY = os.environ.get("ES_API_KEY")
@@ -28,14 +32,15 @@ def es_headers() -> dict:
     return headers
 
 
-async def es_search(index: str, query: dict) -> dict:
+async def es_search(index: str, query_body: dict, validate: bool = True) -> dict:
     """
     Execute an Elasticsearch query against an index.
     """
     es_index = es_index_clean(index)
     url = f"{ES_URL}/{es_index}/_search"
+    fixed_body = es_fix_and_validate(index, query_body) if validate else query_body
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=es_headers(), json=query, timeout=30)
+        response = await client.post(url, headers=es_headers(), json=fixed_body, timeout=30)
         if not response.is_success:
             try:
                 body = response.json()
@@ -49,6 +54,7 @@ async def es_search(index: str, query: dict) -> dict:
                 error_type = f"http_{response.status_code}"
                 reason = response.text
             hint = ES_ERROR_HINTS.get(error_type, "Fix the query and try again.")
+            logger.error(f"Invalid query: {error_type}\n Reason: {reason}\n Hint: {hint}")
             raise FastMCPError(
                 {
                     "error": error_type,
@@ -57,6 +63,89 @@ async def es_search(index: str, query: dict) -> dict:
                 }
             )
         return response.json()
+
+
+def es_fix_and_validate(index: str, query_body: dict) -> dict:
+    """
+    Fix and validate an Elasticsearch query.
+    """
+    logger.debug(f"Original query: {query_body}")
+    fixed_body = es_fix_query(query_body)
+    logger.debug(f"Fixed query: {fixed_body}")
+    validated = es_validate_query(index, fixed_body.get("query", {}))
+    if not validated.get("valid", False):
+        explanations = [e.get("explanation", "") for e in validated.get("explanations", [])]
+        logger.error(f"Invalid query: {explanations}")
+        raise FastMCPError(
+            {
+                "error": "invalid_query",
+                "reason": "; ".join(explanations),
+                "hint": "Fix the query and try again.",
+            }
+        )
+    return fixed_body
+
+
+def es_validate_query(index: str, query: dict, raise_error: bool = False) -> dict:
+    """Hit ES _validate/query to check syntax before executing."""
+    if not query:
+        return {"valid": False, "explanations": [{"explanation": "Query is empty"}]}
+
+    es_index = es_index_clean(index)
+    url = f"{ES_URL}/{es_index}/_validate/query?explain=true"
+    body = {"query": query}
+    logger.debug(f"Validating query: {body}")
+    with httpx.Client() as client:
+        response = client.post(url, headers=es_headers(), json=body, timeout=30)
+        return response.json()
+
+
+def es_fix_query(query_body: dict) -> dict:
+    """
+    Auto-fix common LLM query mistakes before sending to ES.
+    Modifies the query in-place and returns it.
+    """
+    query = copy.deepcopy(query_body)
+
+    # size nested inside aggs, move it to root
+    if "aggs" in query and "size" in query.get("aggs", {}):
+        query["size"] = query["aggs"].pop("size")
+
+    # size limited to ES_MAX_SIZE
+    if "size" in query and query["size"] > ES_MAX_SIZE:
+        logger.warning(f"Query size {query['size']} > {ES_MAX_SIZE}, setting to {ES_MAX_SIZE}")
+        query["size"] = ES_MAX_SIZE
+
+    # must with only term/range/bool clauses → move to filter
+    if "query" in query and "bool" in query["query"]:
+        bool_clause = query["query"]["bool"]
+        if "must" in bool_clause:
+            non_text = []
+            text = []
+            for clause in bool_clause["must"]:
+                if any(k in clause for k in ("term", "terms", "range", "exists")):
+                    non_text.append(clause)
+                else:
+                    text.append(clause)
+            if non_text:
+                bool_clause.setdefault("filter", []).extend(non_text)
+                if text:
+                    bool_clause["must"] = text
+                else:
+                    del bool_clause["must"]
+
+    # remove empty must/should/filter arrays from bool clauses
+    if "query" in query and "bool" in query["query"]:
+        bool_clause = query["query"]["bool"]
+        for key in ("must", "should", "filter", "must_not"):
+            if key in bool_clause and bool_clause[key] == []:
+                del bool_clause[key]
+
+    # remove _source when size is 0 (aggregation-only query)
+    if query.get("size") == 0 and "_source" in query:
+        del query["_source"]
+
+    return query
 
 
 def es_get_mapping(index: str) -> dict:
@@ -82,7 +171,7 @@ def es_get_flat_mapping(index: str) -> dict:
     return _flatten_mapping(properties)
 
 
-def es_validate_fields(es_query: dict, index: str, raise_error: bool = False) -> list[str]:
+def es_validate_fields(index: str, es_query: dict, raise_error: bool = False) -> list[str]:
     """
     Validate that the fields in the query exist in the index mapping.
     Returns a list of invalid fields.
@@ -109,19 +198,6 @@ def es_validate_fields(es_query: dict, index: str, raise_error: bool = False) ->
             }
         )
     return invalid_fields
-
-
-def es_validate_size(es_query: dict, index: str, raise_error: bool = False) -> None:
-    """
-    Validate that the size parameter in the query is less than or equal to ES_MAX_SIZE.
-    """
-    if "size" in es_query and es_query["size"] > ES_MAX_SIZE:
-        raise FastMCPError(
-            {
-                "error": "invalid_query",
-                "message": f"The size parameter must be less than or equal to {ES_MAX_SIZE}. For more results, consider using aggregations instead.",
-            }
-        )
 
 
 def _flatten_mapping(properties: dict, prefix: str = "") -> dict:

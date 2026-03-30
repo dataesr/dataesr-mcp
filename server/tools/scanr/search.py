@@ -1,7 +1,7 @@
 from typing import Annotated
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
-from helpers.elastic import es_search, es_validate_fields, es_validate_size
+from helpers.elastic import es_search
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +30,7 @@ def register(mcp: FastMCP, index: str, index_description: str):
            - Always set '_source' to a list of the fields you actually need to keep responses small.
            - Set 'size' to limit results (max 20). If only doing aggregations, set "size": 0.
 
-        Example Complex Query:
+        Example Complex Query body:
         {{
             "query": {{
                 "bool": {{
@@ -49,14 +49,13 @@ def register(mcp: FastMCP, index: str, index_description: str):
         """,
     )
     async def search(
-        query: Annotated[
+        query_body: Annotated[
             dict,
             Field(
                 description=(
                     f"A complete Elasticsearch request body for the {index} index. "
-                    "Use 'bool' with 'must' for text matching and 'filter' for exact/ID matching. "
-                    'Example text search + filter: {"query": {"bool": {"must": [{"multi_match": {"query": "AI", "fields": ["title.*"]}}], "filter": [{"term": {"isOa": true}}]}}, "_source": ["id", "title.default"], "size": 10} '
-                    'Example aggregation: {"size": 0, "query": {"bool": {"must": [{"term": {"projects.id.keyword": "123456789"}}]}}, "aggs": {"projects": {"terms": {"field": "projects.id.keyword"}}}}'
+                    'Example text search + filter: query_body={"query": {"bool": {"must": [{"multi_match": {"query": "AI", "fields": ["title.*"]}}], "filter": [{"term": {"isOa": true}}]}}, "_source": ["id", "title.default"], "size": 10} '
+                    'Example aggregation: query_body={"size": 0, "query": {"bool": {"must": [{"term": {"projects.id.keyword": "123456789"}}]}}, "aggs": {"projects": {"terms": {"field": "projects.id.keyword"}}}}'
                 )
             ),
         ],
@@ -64,17 +63,14 @@ def register(mcp: FastMCP, index: str, index_description: str):
         f"""
         Execute an Elasticsearch query against the {index} index.
         """
-        es_validate_fields(query, index, raise_error=True)
-        es_validate_size(query, index, raise_error=True)
-
-        data = await es_search(index, query)
+        data = await es_search(index, query_body)
         total = data.get("hits", {}).get("total", {}).get("value", 0)
         hits = [hit["_source"] for hit in data.get("hits", {}).get("hits", [])]
         result = {"total": total, "hits": hits}
         if "aggregations" in data:
             result["aggregations"] = data["aggregations"]
 
-        logger.debug(f"{query=}")
+        logger.debug(f"{query_body=}")
         logger.debug(f"{result=}")
 
         return result

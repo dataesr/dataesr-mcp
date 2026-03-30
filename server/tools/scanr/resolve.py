@@ -37,7 +37,7 @@ def register(mcp: FastMCP, index: str, index_description: str):
             "_source": list(set(source_fields + ["id"])),
             "size": 5,
         }
-        data = await es_search(index, body)
+        data = await es_search(index, body, validate=False)
         return {
             "candidates": [hit["_source"] for hit in data.get("hits", {}).get("hits", [])],
             "instruction": "If multiple candidates are returned, you MUST present them to the user and ask which one to use. Never silently pick one.",
