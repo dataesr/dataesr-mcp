@@ -62,8 +62,8 @@ def field_get_infos(field: dict) -> dict:
     if field.get("ai_suggestion", {}).get("notes"):
         infos["notes"] = field["ai_suggestion"]["notes"]
     # cross reference
-    if field.get("cross_ref"):
-        infos["cross_ref"] = field["cross_ref"]
+    if field.get("cross_index"):
+        infos["cross_index"] = field["cross_index"]
     return infos
 
 

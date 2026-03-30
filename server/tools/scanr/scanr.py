@@ -68,6 +68,7 @@ def register(mcp: FastMCP):
                 "You may chain as many indexes as needed to fully answer the question",
                 "Always prefer specific field matches over generic full-text when possible",
                 "When resolve/search returns more than 1 candidate for an entity, ask the user to disambiguate",
+                "When number of document or field is asked, always try to get unique number of document or field.",
             ],
             "available_indexes": INDEXES,
             "user_query": query,
