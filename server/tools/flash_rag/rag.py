@@ -32,7 +32,6 @@ def register(mcp: FastMCP):
         - chunk_len (int): Length of the chunk
         - keywords (list[str]): List of keywords
         - file_access (str): Access status - 'open' or 'close'
-        - reference (str): Source reference - 'eesr' (Etat de l'Enseignement Superieur et de la Recherche) or 'ssmesr' (Service Statistique du Ministere de l'Enseignement Superieur et de la Recherche)
         """
 
         payload = {
@@ -47,4 +46,21 @@ def register(mcp: FastMCP):
             response.raise_for_status()
             data = response.json()
             logger.debug(f"Received response from Flash RAG: {data}")
-            return data.get("sources", "No source found.")
+
+            sources = [
+                {
+                    "distance": source.get("distance"),
+                    "document": source.get("document"),
+                    "metadata": {
+                        "title": source.get("metadata", {}).get("title", ""),
+                        "section_title": source.get("metadata", {}).get("section_title", ""),
+                        "publication_date": source.get("metadata", {}).get("publication_date", ""),
+                        "publication_type": source.get("metadata", {}).get("publication_type", ""),
+                        "file_access": source.get("metadata", {}).get("file_access", ""),
+                        "file_url": source.get("metadata", {}).get("file_url", ""),
+                        "chunk_type": source.get("metadata", {}).get("chunk_type", ""),
+                    },
+                }
+                for source in data.get("sources", [])
+            ]
+            return sources
