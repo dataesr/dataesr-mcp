@@ -17,6 +17,9 @@ def register(mcp: FastMCP):
         query: str = Field(description="The user query to search for relevant sources (embedding distance)."),
         top_k: int = Field(default=5, description="The number of top relevant sources to return."),
         use_reranker: bool = Field(default=True, description="Lightweight reranker that check title words and dates"),
+        use_cross_encoder: bool = Field(default=True, description="Cross encoder reranker"),
+        use_hybrid_search: bool = Field(default=True, description="Hybrid search with BM25"),
+        # use_mistral: bool = Field(default=True, description="Add mistral answer completion"),
         filters: dict[str, str | list[str]] = Field(default_factory=dict, description="Filter documents metadatas"),
     ) -> list[dict]:
         """
@@ -38,6 +41,9 @@ def register(mcp: FastMCP):
             "query": query,
             "top_k": top_k,
             "use_reranker": use_reranker,
+            "use_cross_encoder": use_cross_encoder,
+            "use_hybrid_search": use_hybrid_search,
+            # "use_mistral": use_mistral,
             "filters": filters,
         }
         logger.debug(f"Sending query to Flash RAG: {payload}")
