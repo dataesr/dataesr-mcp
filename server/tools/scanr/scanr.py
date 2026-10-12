@@ -1,10 +1,10 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
-from tools.scanr import schema, search, resolve
+from mcp.server.fastmcp.exceptions import FastMCPError
+from tools.scanr import resolve, schema, search
 
-
-INDEXES = [
+ScanrIndex = Literal[
     "scanr_publications",
     "scanr_persons",
     "scanr_organizations",
@@ -13,63 +13,131 @@ INDEXES = [
     "scanr_patents",
 ]
 
+index_descriptions = {
+    "scanr_publications": "Scientific publications and other research outputs.",
+    "scanr_persons": "Researchers and other people in the research ecosystem.",
+    "scanr_organizations": "Research organizations and institutions.",
+    "scanr_projects": "Research project records. Choose this index when asking about the project itself, such as its title, description, dates, or identifiers.",
+    "scanr_participations": "Relationships recording a person's or organization's participation in a research project. Choose this index to find who participated in a project, which projects an entity participated in, or participation-specific details.",
+    "scanr_patents": "Patents and patent-related research outputs.",
+}
+
 def register(mcp: FastMCP):
 
-    # register tools for each index
-    for index in INDEXES:
-        index_description = schema.index_get_description(index)
-        schema.register(mcp, index, index_description)
-        search.register(mcp, index, index_description)
-        resolve.register(mcp, index, index_description)
+    @mcp.tool(
+        name="scanr_search",
+        description=f"""
+        Primary scanR tool. Use this single tool for schema discovery, entity resolution, and Elasticsearch searches.
 
-    # register orchestrator
-    @mcp.tool(name="scanr_search")
-    def scanr_search(
-        query: Annotated[str, Field(description="The user query.")],
+        Choose an index by the kind of record being asked about:
+        - publications: {index_descriptions["scanr_publications"]}
+        - persons: {index_descriptions["scanr_persons"]}
+        - organizations: {index_descriptions["scanr_organizations"]}
+        - projects: {index_descriptions["scanr_projects"]}
+        - participations: {index_descriptions["scanr_participations"]}
+        - patents: {index_descriptions["scanr_patents"]}
+
+        For a new search, first call operation="schema" with the selected index.
+        Then call operation="search" using only schema fields.
+        Use operation="resolve" to look up an entity by name before filtering another index by its ID.
+        
+        For a count or distribution, use an Elasticsearch aggregation and set search_query.size to 0;
+
+        Dedicated alternatives are also available as scanr_get_schema, scanr_resolve, and scanr_index_search.
+        """,
+    )
+    async def scanr_search(
+        operation: Annotated[
+            Literal["schema", "search", "resolve"],
+            Field(description="Discover fields, execute a search, or resolve a name to IDs."),
+        ],
+        index: Annotated[
+            ScanrIndex,
+            Field(description=("Index matching the requested record type.")),
+        ],
+        search_query: Annotated[
+            dict | None,
+            Field(
+                description=(
+                    "Elasticsearch request body for operation='search'. Use only fields "
+                    "returned by operation='schema'. For aggregation-only requests, set "
+                    '"size": 0 and include an "aggs" object.'
+                ),
+            ),
+        ] = None,
+        resolve_query: Annotated[
+            str | None,
+            Field(
+                description="Entity name for operation='resolve', such as a person or organization.",
+            ),
+        ] = None,
+        schema_filter: Annotated[
+            Literal["all", "primary", "secondary"],
+            Field(description="Field subset returned by operation='schema'."),
+        ] = "primary",
     ) -> dict:
-        """
-        ALWAYS call this tool first before any scanR search.
-        It returns the mandatory workflow to follow for any scanR query.
-        Do not skip this step.
-        """
+        """Discover a scanR schema, resolve an entity, or search an index."""
+
+        if operation == "schema":
+            return {
+                "index": index,
+                "description": index_descriptions[index],
+                "fields": schema.index_get_fields(index, schema_filter),
+            }
+
+        if operation == "resolve":
+            if not resolve_query:
+                raise FastMCPError("operation='resolve' requires a non-empty query.")
+            return await resolve.index_resolve(index, resolve_query)
+
+        if search_query is None:
+            raise FastMCPError("operation='search' requires search_query.")
+        return await search.index_search(index, search_query)
+
+    @mcp.tool(
+        name="scanr_get_schema",
+        description="""
+        Return the fields and types for one scanR index. 
+        Use this before constructing an Elasticsearch query. 
+        "primary" returns the most relevant fields; use "secondary" or "all" if needed.
+        """,
+    )
+    def scanr_get_schema(
+        index: ScanrIndex,
+        schema_filter: Annotated[
+            Literal["all", "primary", "secondary"],
+            Field(description="Field subset to return."),
+        ] = "primary",
+    ) -> dict:
+        """Return the selected index's field schema."""
+
         return {
-            "workflow": [
-                "Step 1 — Identify relevant indexes: based on the user query, "
-                "pick one or more indexes from the 'available_indexes' list below. "
-                "Think about whether the query requires data from multiple indexes.",
-                "Step 2 — Get schema: for each selected index, call "
-                "{index}_get_schema to retrieve the exact list of available fields. "
-                "Never skip this step, never guess field names.",
-                "Step 3 — Build query: construct a valid Elasticsearch query using "
-                "ONLY fields returned by {index}_get_schema. "
-                "Use match/multi_match for text fields, term/terms for keyword fields. "
-                "Always set _source to only the fields you need, INCLUDING any ID fields "
-                "you will need to cross-reference another index.",
-                "Step 4 — Cross-index enrichment (if needed): "
-                "if the answer requires data from another index, first use the "
-                "{index}_resolve tool to get the relevant IDs for the entities you need.",
-                'WRONG: {"match": {"affiliations.name": "Sorbonne"}} '
-                "RIGHT: First search scanr_organizations_resolve for 'Sorbonne', get id='org123', "
-                'then search scanr_publications_search with {"term": {"affiliations.id": "org123"}} ',
-                "Step 5 — Execute search: call {index}_search with your query.",
-                "Step 6 — Evaluate results: "
-                "if results are empty or an 'invalid_fields' error is returned, "
-                "go back to Step 2, re-read the schema carefully and fix your query. "
-                "Never return empty results without retrying at least once.",
-                "Step 7 — Synthesize: return a clear structured answer to the user "
-                "based on all collected results, merging data across indexes if needed.",
-            ],
-            "rules": [
-                "Never call {index}_search before calling {index}_get_schema",
-                "Never use field names not present in the schema",
-                "If an 'invalid_fields' error is returned, you MUST call {index}_get_schema again",
-                "For cross-index queries, always use term/terms on ID fields — never full-text match on IDs",
-                "When chaining indexes, fetch only the ID fields you need in _source to keep responses small",
-                "You may chain as many indexes as needed to fully answer the question",
-                "Always prefer specific field matches over generic full-text when possible",
-                "When resolve/search returns more than 1 candidate for an entity, ask the user to disambiguate",
-                "When number of document or field is asked, always try to get unique number of document or field.",
-            ],
-            "available_indexes": INDEXES,
-            "user_query": query,
+            "index": index,
+            "description": index_descriptions[index],
+            "fields": schema.index_get_fields(index, schema_filter),
         }
+
+    @mcp.tool(
+        name="scanr_resolve",
+        description="""Look up a person, organization, project, publication, or other entity by name in the selected scanR index. 
+        Returns candidate IDs and labels for use in exact cross-index filters.
+        If multiple candidates are returned, ask the user to disambiguate rather than choosing silently.
+        """,
+    )
+    async def scanr_resolve(index: ScanrIndex, resolve_query: str) -> dict:
+        """Resolve a name to candidate IDs and labels."""
+        return await resolve.index_resolve(index, resolve_query)
+
+    @mcp.tool(
+        name="scanr_index_search",
+        description="""
+        Execute an Elasticsearch request against one scanR index.
+        First inspect the index with scanr_get_schema or scanr_search(operation="schema"); use only fields returned by the schema.
+        Use match/multi_match for text, term/terms for exact values and IDs, and put exact filters in bool.filter.
+        Limit hits with size (maximum 20) and _source.
+        For aggregation-only requests set size to 0; response includes hit total and aggregations.
+        """,
+    )
+    async def scanr_index_search(index: ScanrIndex, search_query: dict) -> dict:
+        """Execute an Elasticsearch query against the selected scanR index."""
+        return await search.index_search(index, search_query)
