@@ -3,6 +3,7 @@ import yaml
 import httpx
 from functools import lru_cache
 from typing import Literal
+from mcp.server.fastmcp.exceptions import FastMCPError
 from helpers.elastic import es_index_clean
 
 
@@ -37,7 +38,27 @@ def index_get_description(index: str) -> str:
     return schema.get("_meta", {}).get("description", "")
 
 
-def field_get_infos(field: dict) -> dict:
+AGGREGATABLE_TYPES = {
+    "byte",
+    "short",
+    "integer",
+    "long",
+    "unsigned_long",
+    "half_float",
+    "float",
+    "double",
+    "scaled_float",
+    "date",
+    "date_nanos",
+    "boolean",
+    "keyword",
+    "constant_keyword",
+    "wildcard",
+    "ip",
+}
+
+
+def field_get_infos(field: dict, field_name: str | None = None) -> dict:
     """
     Get the infos for the fields.
     """
@@ -47,6 +68,10 @@ def field_get_infos(field: dict) -> dict:
     # elastic is keyword
     if field.get("has_keyword"):
         infos["keyword"] = True
+        if field_name:
+            infos["aggregation_field"] = f"{field_name}.keyword"
+    elif field_name and field.get("type") in AGGREGATABLE_TYPES:
+        infos["aggregation_field"] = field_name
     # field description
     if field.get("description"):
         infos["description"] = field["description"]
@@ -62,6 +87,21 @@ def field_get_infos(field: dict) -> dict:
     return infos
 
 
+def index_get_aggregation_field(index: str, field_name: str) -> str:
+    """Return the exact Elasticsearch field path for a terms aggregation."""
+    field = index_get_base_schema(index).get("fields", {}).get(field_name)
+    if not field or field.get("exclude", False):
+        raise FastMCPError(f"Field {field_name!r} is not available in the {index} schema.")
+
+    infos = field_get_infos(field, field_name)
+    aggregation_field = infos.get("aggregation_field")
+    if not aggregation_field:
+        raise FastMCPError(
+            f"Field {field_name!r} is not aggregatable according to the {index} schema."
+        )
+    return aggregation_field
+
+
 def index_get_fields(index: str, filter: Literal["all", "primary", "secondary"] = "primary") -> dict:
     """
     Get the schema for an index.
@@ -69,7 +109,7 @@ def index_get_fields(index: str, filter: Literal["all", "primary", "secondary"] 
     schema = index_get_base_schema(index)
     fields = schema.get("fields", {})
     return {
-        key: field_get_infos(field)
+        key: field_get_infos(field, key)
         for key, field in fields.items()
         if not field.get("exclude", False)
         and (
