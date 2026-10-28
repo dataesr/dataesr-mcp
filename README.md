@@ -21,6 +21,10 @@ Nothing about the tableaux conventions is stored in this repository. Each call r
 | `GITHUB_TOKEN` | unset | Optional read-only token; raises the GitHub rate limit (60 requests/hour unauthenticated) and is required for a private repository |
 
 `validate_dashboard_spec` checks the manifest against the repository's schema plus the rules JSON Schema cannot express (route paths belong to the board, data source ids exist in the index). It does not validate, build, or run a submitted project. Do not execute generated code in the MCP service; isolated project validation requires a separately deployed sandbox.
+## Authentication
+
+All MCP endpoints accept either the static bearer token (`MCP_AUTH_TOKEN`) or an OAuth 2.1 access token (authorization code + PKCE, dynamic client registration, refresh tokens), which lets AI providers connectors authenticate. During authorization the user enters `MCP_AUTH_TOKEN` on the consent page. Tokens are HMAC-signed with `MCP_AUTH_TOKEN` (no storage; changing it revokes everything). Set `MCP_PUBLIC_URL` (e.g. `https://mcp.example.org`) if the server is behind a proxy that doesn't forward `Host`/`X-Forwarded-*` headers.
+
 ## Setup
 
 ### Prerequisites

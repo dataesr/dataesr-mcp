@@ -1,3 +1,4 @@
+import hmac
 import os
 import uvicorn
 import contextlib
@@ -9,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount
+from helpers import oauth
 from tools.affiliation_matcher import match
 from tools.scanr import scanr
 from tools.flash_rag import rag
@@ -48,18 +50,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         auth_header = request.headers.get("Authorization", "")
         token = auth_header.removeprefix("Bearer ").strip()
-        if auth_header.startswith("Bearer ") and token == VALID_TOKEN:
+        if oauth.is_public_path(request.url.path):
             return await call_next(request)
+        if auth_header.startswith("Bearer ") and (
+            hmac.compare_digest(token, VALID_TOKEN) or oauth.is_valid_access_token(token)
+        ):
+            return await call_next(request)
+        metadata = f"{oauth.base_url(request)}/.well-known/oauth-protected-resource{request.url.path.rstrip('/')}"
         return Response(
             content="Unauthorized",
             status_code=401,
-            headers={"WWW-Authenticate": 'Bearer realm="mcp"'},
+            headers={"WWW-Authenticate": f'Bearer realm="mcp", resource_metadata="{metadata}"'},
         )
 
 
 # Create app
 app = Starlette(
     routes=[
+        *oauth.routes,
         Mount("/scanr", app=scanr_mcp.streamable_http_app()),
         Mount("/match", app=match_mcp.streamable_http_app()),
         Mount("/rag", app=rag_mcp.streamable_http_app()),
