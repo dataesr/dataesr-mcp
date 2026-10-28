@@ -77,5 +77,22 @@ app = Starlette(
     middleware=[Middleware(AuthMiddleware)],
 )
 
+# Serve each mount at both "/scanr" and "/scanr/" without a redirect: MCP clients may POST to the
+# path without the trailing slash, and do not re-send the request after a 307.
+class MountPathNormalizer:
+    def __init__(self, wrapped: Starlette, prefixes: tuple[str, ...]):
+        self.wrapped = wrapped
+        self.prefixes = prefixes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and scope["path"] in self.prefixes:
+            scope = {**scope, "path": scope["path"] + "/"}
+            if scope.get("raw_path") is not None:
+                scope["raw_path"] = scope["raw_path"] + b"/"
+        await self.wrapped(scope, receive, send)
+
+
+app = MountPathNormalizer(app, ("/scanr", "/match", "/rag", "/tableaux"))
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
