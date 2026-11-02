@@ -13,7 +13,7 @@ from starlette.routing import Mount
 from helpers import oauth
 from tools.affiliation_matcher import match
 from tools.scanr import scanr
-from tools.flash_rag import rag
+from tools.catalogue import rag
 from tools.tableaux import prototype as tableaux
 
 VALID_TOKEN = os.environ["MCP_AUTH_TOKEN"]
@@ -22,14 +22,14 @@ transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=F
 
 # Create MCP servers
 scanr_mcp = FastMCP("scanr-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
-match_mcp = FastMCP("match-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
+matcher_mcp = FastMCP("matcher-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
 rag_mcp = FastMCP("rag-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
 tableaux_mcp = FastMCP("tableaux-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
 
 
 # Register tools
 scanr.register(scanr_mcp)
-match.register(match_mcp)
+match.register(matcher_mcp)
 rag.register(rag_mcp)
 tableaux.register(tableaux_mcp)
 
@@ -39,7 +39,7 @@ tableaux.register(tableaux_mcp)
 async def lifespan(app: Starlette):
     async with contextlib.AsyncExitStack() as stack:
         await stack.enter_async_context(scanr_mcp.session_manager.run())
-        await stack.enter_async_context(match_mcp.session_manager.run())
+        await stack.enter_async_context(matcher_mcp.session_manager.run())
         await stack.enter_async_context(rag_mcp.session_manager.run())
         await stack.enter_async_context(tableaux_mcp.session_manager.run())
         yield
@@ -69,7 +69,7 @@ app = Starlette(
     routes=[
         *oauth.routes,
         Mount("/scanr", app=scanr_mcp.streamable_http_app()),
-        Mount("/match", app=match_mcp.streamable_http_app()),
+        Mount("/match", app=matcher_mcp.streamable_http_app()),
         Mount("/rag", app=rag_mcp.streamable_http_app()),
         Mount("/tableaux", app=tableaux_mcp.streamable_http_app()),
     ],
