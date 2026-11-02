@@ -9,7 +9,7 @@ Model Context Protocol (MCP) server for interacting with dataesr resources.
 - **Flash RAG**: Retrieve relevant documents from French Ministry of Higher Education and Research publications
 - **Tableaux prototyping**: Serve the dashboard prototyping guidance of `dataesr/tableaux` (AGENTS.md files, README, skills), its board templates and data-source index, and validate a dashboard manifest against the repository's JSON Schema, without executing generated code.
 
-The tableaux tools are registered at `/tableaux` and will be available after the service is deployed (using the same authentication as the other mounted MCP servers): `list_guidance`, `get_guidance`, `list_templates`, `get_template`, `list_data_sources`, `get_data_source_guide`, `list_dashboard_components`, `recommend_architecture`, and `validate_dashboard_spec`.
+The tableaux tools are registered at `/tableaux` and will be available after the service is deployed (using the same authentication as the other mounted MCP servers): `list_guidance`, `get_guidance`, `list_templates`, `get_template`, `list_data_sources`, `get_data_source_guide`, `list_dashboard_components`, `list_chart_examples`, `list_existing_boards`, `recommend_architecture`, `validate_dashboard_spec`, and `validate_board_bundle`.
 
 Nothing about the tableaux conventions is stored in this repository. Each call reads the current files from GitHub through the contents API (cached for 5 minutes), starting from the index `docs/dashboard-prototype/prototype.index.json`, which lists the guidance documents, template paths, components and data sources. Change the content in `dataesr/tableaux`, not here. Configuration (environment variables):
 
@@ -20,7 +20,9 @@ Nothing about the tableaux conventions is stored in this repository. Each call r
 | `TABLEAUX_PROTOTYPE_INDEX_PATH` | `docs/dashboard-prototype/prototype.index.json` | Location of the index in the repository |
 | `GITHUB_TOKEN` | unset | Optional read-only token; raises the GitHub rate limit (60 requests/hour unauthenticated) and is required for a private repository |
 
-`validate_dashboard_spec` checks the manifest against the repository's schema plus the rules JSON Schema cannot express (route paths belong to the board, data source ids exist in the index). It does not validate, build, or run a submitted project. Do not execute generated code in the MCP service; isolated project validation requires a separately deployed sandbox.
+`validate_dashboard_spec` checks the manifest against the repository's schema plus the rules JSON Schema cannot express (route paths belong to the board, data source ids exist in the index, duplicate routes), and warns on a board-id collision or a self-declared preview owner. `validate_board_bundle` runs static checks on a board's files in the repository (router mounted, folder names match the board id, `.http` tests present, no hard-coded hex colors, no browser `/elasticsearch` call or fixture import). Neither validates, builds, or runs a submitted project. Do not execute generated code in the MCP service; isolated project validation requires a separately deployed sandbox.
+
+Chat workflow gap: these tools plan and validate but cannot produce a board file bundle from chat. A `scaffold_board(id, routes)` tool returning a bundle to import is a candidate future addition; it is not implemented.
 ## Authentication
 
 All MCP endpoints accept either the static bearer token (`MCP_AUTH_TOKEN`) or an OAuth 2.1 access token (authorization code + PKCE, refresh tokens, `client_credentials`). Tokens are HMAC-signed with `MCP_AUTH_TOKEN` (no storage; changing it revokes everything).
