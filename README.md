@@ -29,10 +29,28 @@ All MCP endpoints accept either the static bearer token (`MCP_AUTH_TOKEN`) or an
 
 Two ways to connect an OAuth client (e.g. Claude):
 
-- **Pre-configured client** (recommended): in the connector's advanced settings, set **OAuth Client ID** to `MCP_OAUTH_CLIENT_ID` (default `dataesr-mcp`) and **OAuth Client Secret** to the value of `MCP_AUTH_TOKEN`. The user then only clicks "Allow" on the consent page.
+- **Pre-configured client** (recommended): in the connector's advanced settings, set **OAuth Client ID** to `MCP_OAUTH_CLIENT_ID` (default `dataesr`) and **OAuth Client Secret** to the value of `MCP_AUTH_TOKEN`. The user then only clicks "Allow" on the consent page.
 - **Dynamic registration** (no credentials configured): the client registers itself, and the user types `MCP_AUTH_TOKEN` on the consent page.
 
 Set `MCP_PUBLIC_URL` (e.g. `https://mcp.example.org`) if the server is behind a proxy that doesn't forward `Host`/`X-Forwarded-*` headers.
+
+## Configuration
+
+The server reads its configuration from environment variables (a local `.env` file is used by `docker-compose` and `--env-file`).
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `MCP_AUTH_TOKEN` | yes | Static bearer token; also the HMAC key signing OAuth clients, codes and tokens |
+| `MCP_OAUTH_CLIENT_ID` | no (default `dataesr`) | Client ID of the pre-configured OAuth client |
+| `MCP_PUBLIC_URL` | no | Public base URL, when behind a proxy that doesn't forward `Host`/`X-Forwarded-*` |
+| `ES_URL` | scanR | Elasticsearch base URL hosting the `scanr-*` indexes |
+| `ES_API_KEY` | no | Value sent in the `Authorization` header to Elasticsearch |
+| `SCANR_SCHEMAS_URL` | scanR | Base URL of the `<index>.yaml` schema files |
+| `AFFILIATION_MATCHER_URL` | affiliation matcher | Affiliation matcher endpoint |
+| `CATALOGUE_API_URL` | RAG | Catalogue API base URL |
+| `CATALOGUE_API_KEY` | RAG | Value sent in the `Authorization` header to the catalogue API |
+
+The `TABLEAUX_*` and `GITHUB_TOKEN` variables are described in the tableaux section above.
 
 ## Setup
 
@@ -46,9 +64,7 @@ Set `MCP_PUBLIC_URL` (e.g. `https://mcp.example.org`) if the server is behind a 
 # Install dependencies
 uv sync
 
-# Copy and configure environment variables
-cp .env.example .env
-# Edit .env with your credentials
+# Create a .env file with the variables listed in Configuration
 
 # Run server
 uv run main.py
