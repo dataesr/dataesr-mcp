@@ -1,6 +1,6 @@
 """Query auto-fixes applied before a query is sent to Elasticsearch."""
 
-from server.helpers.elastic import es_fix_query
+from helpers.elastic import es_fix_query
 
 
 def test_size_is_capped():

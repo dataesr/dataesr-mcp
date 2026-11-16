@@ -1,5 +1,3 @@
-import hmac
-import os
 import uvicorn
 import contextlib
 from mcp.server.fastmcp import FastMCP
@@ -10,13 +8,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount
-from helpers import oauth
+from helpers import credentials, oauth
 from tools.affiliation_matcher import match
 from tools.scanr import scanr
 from tools.catalogue import rag
 from tools.tableaux import prototype as tableaux
-
-VALID_TOKEN = os.environ["MCP_AUTH_TOKEN"]
 
 transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
@@ -45,23 +41,35 @@ async def lifespan(app: Starlette):
         yield
 
 
-# Middleware for bearer token authentication
+# Middleware for bearer token authentication and per-route authorization
+def _bearer_credential(request: Request) -> credentials.Credential | None:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header.removeprefix("Bearer ").strip()
+    return credentials.by_secret(token) or oauth.access_credential(token)
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        auth_header = request.headers.get("Authorization", "")
-        token = auth_header.removeprefix("Bearer ").strip()
         if oauth.is_public_path(request.url.path):
             return await call_next(request)
-        if auth_header.startswith("Bearer ") and (
-            hmac.compare_digest(token, VALID_TOKEN) or oauth.is_valid_access_token(token)
-        ):
-            return await call_next(request)
-        metadata = f"{oauth.base_url(request)}/.well-known/oauth-protected-resource{request.url.path.rstrip('/')}"
-        return Response(
-            content="Unauthorized",
-            status_code=401,
-            headers={"WWW-Authenticate": f'Bearer realm="mcp", resource_metadata="{metadata}"'},
-        )
+        credential = _bearer_credential(request)
+        if credential is None:
+            metadata = f"{oauth.base_url(request)}/.well-known/oauth-protected-resource{request.url.path.rstrip('/')}"
+            return Response(
+                content="Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": f'Bearer realm="mcp", resource_metadata="{metadata}"'},
+            )
+        scope = request.url.path.lstrip("/").split("/", 1)[0]
+        if scope in credentials.ROUTE_SCOPES and not credential.allows(scope):
+            return Response(
+                content=f"Forbidden: this credential has no access to /{scope}",
+                status_code=403,
+                headers={"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{scope}"'},
+            )
+        return await call_next(request)
 
 
 # Create app

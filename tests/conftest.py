@@ -3,11 +3,21 @@
 import os
 
 TOKEN = "test-token"
+SCOPE_SECRETS = {
+    "scanr": "scanr-secret",
+    "match": "match-secret",
+    "rag": "rag-secret",
+    "tableaux": "tableaux-secret",
+}
+
 
 # The server reads its configuration at import time, so this must run before importing it.
 os.environ.update(
     {
         "MCP_AUTH_TOKEN": TOKEN,
+        "MCP_SIGNING_KEY": "signing-key",
+        "MCP_OAUTH_CLIENT_ID": "dataesr",
+        **{f"MCP_TOKEN_{scope.upper()}": secret for scope, secret in SCOPE_SECRETS.items()},
         "MCP_PUBLIC_URL": "https://mcp.test",
         "ES_URL": "https://es.test",
         "ES_API_KEY": "es-key",
@@ -25,17 +35,17 @@ import pytest  # noqa: E402
 import respx  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
-import server.main  # noqa: E402
-from server.helpers import elastic  # noqa: E402
+import main  # noqa: E402
+from helpers import elastic  # noqa: E402
 from mcp_client import McpSession  # noqa: E402
-from server.tools.scanr import schema  # noqa: E402
-from server.tools.tableaux import prototype  # noqa: E402
+from tools.scanr import schema  # noqa: E402
+from tools.tableaux import prototype  # noqa: E402
 
 
 @pytest.fixture(scope="session")
 def http():
     """The app, with its lifespan running. MCP session managers can only be started once per process."""
-    with TestClient(server.main.app, base_url="https://mcp.test") as client:
+    with TestClient(main.app, base_url="https://mcp.test") as client:
         yield client
 
 

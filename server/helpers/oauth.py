@@ -1,12 +1,13 @@
 """Minimal stateless OAuth 2.1 authorization server (PKCE + dynamic client registration).
 
-Clients, codes and tokens are HMAC-signed with MCP_AUTH_TOKEN, so nothing is stored
-and tokens survive restarts.
+Clients, codes and tokens are HMAC-signed with MCP_SIGNING_KEY (MCP_AUTH_TOKEN when unset), so nothing
+is stored and tokens survive restarts. Every code and token carries the id of the credential
+(see helpers/credentials.py) it was issued to, which is looked up again on each request.
 
 Two kinds of clients are supported:
-- a pre-configured client: client_id MCP_OAUTH_CLIENT_ID (default "dataesr"),
-  client_secret MCP_AUTH_TOKEN. Users only click "Allow" on the consent page.
-- dynamically registered clients (no secret): the user must type MCP_AUTH_TOKEN on the consent page.
+- a pre-configured client: client_id is a credential id (MCP_OAUTH_CLIENT_ID, default "dataesr", for the
+  admin MCP_AUTH_TOKEN), client_secret is that credential's secret. Users only click "Allow" on the consent page.
+- dynamically registered clients (no secret): the user must type a credential secret on the consent page.
 """
 
 import base64
@@ -22,9 +23,14 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-SECRET = os.environ["MCP_AUTH_TOKEN"]
+from helpers import credentials
+
+SECRET = os.environ.get("MCP_SIGNING_KEY") or os.environ.get("MCP_AUTH_TOKEN") or ""
+if not SECRET:
+    raise RuntimeError("Set MCP_SIGNING_KEY (or MCP_AUTH_TOKEN) to sign OAuth clients, codes and tokens.")
 PUBLIC_URL = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
-STATIC_CLIENT_ID = os.environ.get("MCP_OAUTH_CLIENT_ID", "dataesr")
+
+ROUTE_LABELS = {"scanr": "scanR", "match": "affiliation matcher", "rag": "RAG", "tableaux": "tableaux"}
 
 CODE_TTL = 300
 ACCESS_TTL = 3600
@@ -63,8 +69,15 @@ def _verify(value: str, kind: str) -> dict | None:
     return payload
 
 
-def is_valid_access_token(token: str) -> bool:
-    return _verify(token, "access") is not None
+def _token_credential(payload: dict) -> credentials.Credential | None:
+    # Tokens issued before credentials existed have no "cred": they were all issued to the admin.
+    return credentials.by_id(payload.get("cred", credentials.ADMIN_ID))
+
+
+def access_credential(token: str) -> credentials.Credential | None:
+    """The enabled credential an access token was issued to, or None if the token is invalid."""
+    payload = _verify(token, "access")
+    return _token_credential(payload) if payload else None
 
 
 def is_public_path(path: str) -> bool:
@@ -154,7 +167,7 @@ button{cursor:pointer;border-radius:8px;font-size:1rem;padding:10px 16px;border:
 .foot{margin:16px 0 0;font-size:.8rem;color:#777}
 </style></head><body><main class="card">
 <h1>Authorize access</h1>
-<p class="sub"><b>__NAME__</b> wants to use the dataesr MCP tools (scanR, affiliation matcher, RAG, tableaux).</p>
+<p class="sub"><b>__NAME__</b> wants to use __TOOLS__.</p>
 <div class="box"><b>Will return to</b>__HOST__</div>
 __ERR__
 <form method="post">__HIDDEN__
@@ -184,8 +197,14 @@ def _render_form(params: dict, client: dict, error: str = "") -> HTMLResponse:
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in params.items()
     )
     host = urlparse(params["redirect_uri"]).netloc or params["redirect_uri"]
+    if client["static"]:
+        labels = ", ".join(ROUTE_LABELS[route] for route in client["credential"].routes())
+        tools = f"the dataesr MCP tools: {labels}"
+    else:
+        tools = "the dataesr MCP tools your access token gives access to"
     page = (
         _PAGE.replace("__NAME__", html.escape(client["name"] or host))
+        .replace("__TOOLS__", html.escape(tools))
         .replace("__HOST__", html.escape(host))
         .replace("__ERR__", f'<div class="err">{html.escape(error)}</div>' if error else "")
         .replace("__HIDDEN__", hidden)
@@ -195,12 +214,13 @@ def _render_form(params: dict, client: dict, error: str = "") -> HTMLResponse:
 
 
 def _get_client(client_id: str, redirect_uri: str) -> dict | None:
-    if hmac.compare_digest(client_id, STATIC_CLIENT_ID):
+    credential = credentials.client_credential(client_id)
+    if credential:
         # The client_secret is required at the token endpoint, so any secure redirect is safe.
         parsed = urlparse(redirect_uri)
         local = parsed.hostname in ("localhost", "127.0.0.1")
         if parsed.scheme == "https" or (parsed.scheme == "http" and local):
-            return {"static": True, "name": ""}
+            return {"static": True, "name": "", "credential": credential}
         return None
     client = _verify(client_id, "client")
     if client and redirect_uri in client["redirect_uris"]:
@@ -235,13 +255,18 @@ async def authorize(request: Request) -> Response:
 
     if source.get("action") == "deny":
         return redirect({"error": "access_denied"})
-    if not client["static"] and not hmac.compare_digest(str(source.get("token", "")), SECRET):
-        return _render_form(params, client, "Invalid token, please try again.")
+    if client["static"]:
+        credential = client["credential"]
+    else:
+        credential = credentials.by_secret(str(source.get("token", "")))
+        if not credential:
+            return _render_form(params, client, "Invalid token, please try again.")
 
     code = _sign(
         {
             "typ": "code",
             "exp": time.time() + CODE_TTL,
+            "cred": credential.id,
             "client_id": params["client_id"],
             "redirect_uri": params["redirect_uri"],
             "challenge": params["code_challenge"],
@@ -250,15 +275,16 @@ async def authorize(request: Request) -> Response:
     return redirect({"code": code})
 
 
-def _issue_tokens(client_id: str, refresh: bool = True) -> JSONResponse:
+def _issue_tokens(client_id: str, credential_id: str, refresh: bool = True) -> JSONResponse:
     now = time.time()
+    claims = {"client_id": client_id, "cred": credential_id}
     body = {
-        "access_token": _sign({"typ": "access", "exp": now + ACCESS_TTL, "client_id": client_id}),
+        "access_token": _sign({"typ": "access", "exp": now + ACCESS_TTL, **claims}),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
     }
     if refresh:
-        body["refresh_token"] = _sign({"typ": "refresh", "exp": now + REFRESH_TTL, "client_id": client_id})
+        body["refresh_token"] = _sign({"typ": "refresh", "exp": now + REFRESH_TTL, **claims})
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
@@ -278,31 +304,33 @@ async def token(request: Request) -> Response:
     grant = form.get("grant_type")
     client_id, client_secret = _client_credentials(request, form)
 
-    is_static = hmac.compare_digest(client_id, STATIC_CLIENT_ID)
-    if is_static and not hmac.compare_digest(client_secret, SECRET):
+    static = credentials.client_credential(client_id)
+    if static and not static.matches(client_secret):
         return _oauth_error("invalid_client", "invalid client_secret", 401)
 
     if grant == "client_credentials":
-        if not is_static:
+        if not static:
             return _oauth_error("unauthorized_client")
-        return _issue_tokens(client_id, refresh=False)
+        return _issue_tokens(client_id, static.id, refresh=False)
 
     if grant == "authorization_code":
         code = _verify(str(form.get("code", "")), "code")
-        if not code or code["client_id"] != client_id:
+        credential = credentials.by_id(code.get("cred", "")) if code else None
+        if not code or code["client_id"] != client_id or not credential:
             return _oauth_error("invalid_grant", "invalid or expired code")
         if str(form.get("redirect_uri", "")) != code["redirect_uri"]:
             return _oauth_error("invalid_grant", "redirect_uri mismatch")
         challenge = _b64(hashlib.sha256(str(form.get("code_verifier", "")).encode()).digest())
         if not hmac.compare_digest(challenge, code["challenge"]):
             return _oauth_error("invalid_grant", "PKCE verification failed")
-        return _issue_tokens(client_id)
+        return _issue_tokens(client_id, credential.id)
 
     if grant == "refresh_token":
         refresh = _verify(str(form.get("refresh_token", "")), "refresh")
-        if not refresh or refresh["client_id"] != client_id:
+        credential = _token_credential(refresh) if refresh else None
+        if not refresh or refresh["client_id"] != client_id or not credential:
             return _oauth_error("invalid_grant", "invalid or expired refresh token")
-        return _issue_tokens(client_id)
+        return _issue_tokens(client_id, credential.id)
 
     return _oauth_error("unsupported_grant_type")
 
