@@ -15,7 +15,10 @@ ES_MAX_SIZE = 20
 ES_MAX_FROM_PLUS_SIZE = 1000
 ES_MAX_AGG_SIZE = 100
 ES_MAX_AGG_DEPTH = 3
-ES_ALLOWED_KEYS = {"query", "size", "from", "_source", "sort", "aggs", "aggregations", "track_total_hits"}
+ES_ALLOWED_KEYS = {
+    "query", "size", "from", "_source", "sort", "search_after",
+    "aggs", "aggregations", "track_total_hits",
+}
 ES_BANNED_KEYS = {"runtime_mappings", "scroll", "pit"}
 ES_BANNED_PREFIXES = ("script",)
 ES_TERMS_AGGS = ("terms", "significant_terms", "multi_terms")
@@ -88,6 +91,19 @@ def es_guard(query_body: dict, known_fields: set[str] | None = None) -> tuple[di
             f"Unsupported top-level keys: {unknown_keys}.",
             f"Only these keys are allowed: {sorted(ES_ALLOWED_KEYS)}.",
         )
+    if "search_after" in query_body:
+        if not isinstance(query_body["search_after"], list) or not query_body["search_after"]:
+            raise _rejected(
+                "invalid_cursor",
+                "search_after must be a non-empty list of sort values.",
+                "Use the next_cursor returned by a previous search with the same sort.",
+            )
+        if not query_body.get("sort"):
+            raise _rejected(
+                "invalid_cursor",
+                "search_after requires sort.",
+                "Add a stable sort and use the next_cursor returned by a previous search.",
+            )
     banned = _banned_keys(query_body)
     if banned:
         raise _rejected(

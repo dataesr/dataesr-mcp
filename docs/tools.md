@@ -4,7 +4,7 @@ The server exposes four MCP endpoints. Each is a separate MCP server with its ow
 
 | Route | Purpose | Tools |
 | --- | --- | --- |
-| `/scanr` | Query the scanR indexes | `scanr_get_schema`, `scanr_resolve`, `scanr_index_search`, `scanr_field_values` |
+| `/scanr` | Query the scanR indexes | `scanr_list_indexes`, `scanr_get_schema`, `scanr_describe_field`, `scanr_resolve`, `scanr_query`, `scanr_index_search`, `scanr_field_values` |
 | `/match` | Match affiliation strings to reference systems | `get_affiliation_match` |
 | `/rag` | Search Ministry publications | `flash_rag` |
 | `/tableaux` | Dashboard prototyping guidance | `list_guidance`, `get_guidance`, `list_templates`, `get_template`, `list_data_sources`, `get_data_source_guide`, `list_dashboard_components`, `list_chart_examples`, `list_existing_boards`, `recommend_architecture`, `validate_dashboard_spec`, `validate_board_bundle` |
@@ -26,10 +26,12 @@ You normally don't call these tools yourself: an AI assistant connected to the e
 
 ### Typical workflow
 
-1. `scanr_get_schema`: discover the fields of an index. Only use fields it returns.
-2. `scanr_resolve`: turn a name ("Université de Lorraine") into an id, then filter another index with that id.
-3. `scanr_field_values`: check the real values of a categorical field (for example a project type) before filtering on it.
-4. `scanr_index_search`: run the actual query or aggregation.
+1. `scanr_list_indexes`: compare index descriptions, primary fields and document counts.
+2. `scanr_get_schema`: discover the fields of an index. It defaults to primary fields; use `search`, `prefix`, `limit` and `offset` to find a field or page through a larger schema.
+3. `scanr_describe_field`: inspect full notes, examples and cross-index links for an individual field.
+4. `scanr_resolve`: turn a name ("Université de Lorraine") into an id, then filter another index with that id.
+5. `scanr_field_values`: check the real values of a categorical field (for example a project type) before filtering on it.
+6. `scanr_query`: use structured text, filters, sorting, cursors and aggregations for common searches. Use `scanr_index_search` for advanced Elasticsearch requests.
 
 The workflow and disambiguation rules are sent to the assistant as server instructions and are also available as the `scanr_guide` prompt.
 
@@ -41,7 +43,7 @@ The workflow and disambiguation rules are sent to the assistant as server instru
 
 ### `scanr_get_schema`
 
-Arguments: `index`, and optionally `schema_filter` (`primary` by default, or `all` / `secondary`). The schema is cached for one hour (`SCANR_SCHEMA_TTL` seconds); if a refresh fails, the last good copy is served.
+Arguments: `index`, and optionally `schema_filter` (`primary` by default, or `all` / `secondary`), `search` (case-insensitive substring in field names or descriptions), `prefix` (for example `authors.*`), `limit` (100 by default, maximum 500) and `offset` (0 by default). Results are compact and paginated. The schema is cached for one hour (`SCANR_SCHEMA_TTL` seconds); if a refresh fails, the last good copy is served.
 
 ```json
 { "index": "scanr_publications", "schema_filter": "primary" }
@@ -54,7 +56,6 @@ Arguments: `index`, and optionally `schema_filter` (`primary` by default, or `al
   "fields": {
     "title.default": {
       "type": "text",
-      "keyword": true,
       "aggregation_field": "title.default.keyword",
       "description": "Publication title"
     },
@@ -64,6 +65,18 @@ Arguments: `index`, and optionally `schema_filter` (`primary` by default, or `al
 ```
 
 `aggregation_field` is the exact path to use in `terms` aggregations.
+
+### `scanr_list_indexes`
+
+Returns each index's description, primary fields and exact Elasticsearch document count.
+
+### `scanr_describe_field`
+
+Returns the full metadata for one field, including its description, notes, cross-index links and examples when present. Unknown fields include close name suggestions.
+
+```json
+{ "index": "scanr_publications", "field": "title.default" }
+```
 
 ### `scanr_resolve`
 
@@ -99,6 +112,22 @@ Most frequent values of an aggregatable field (1 to 100, 20 by default). `values
 ```
 
 A non-zero `sum_other_doc_count` means other values exist that are not listed.
+Use `contains` or `prefix` to filter string buckets. Set `mode` to `"stats"` for numeric/date field statistics (`count`, `min`, `max`, `avg`, `sum`).
+
+### `scanr_query`
+
+Builds a guarded Elasticsearch query from structured parameters. `filters` accepts exact scalar values, lists of exact values, or range objects using `gte`, `gt`, `lte` and `lt`. `sort` maps field names to `asc` or `desc`; use the returned `next_cursor` as `cursor` for the next page. Aggregations use `aggregate: {"group_by": "field", "metric": {"type": "avg", "field": "numeric_field"}}`; `count` is the default metric.
+
+```json
+{
+  "index": "scanr_publications",
+  "text": "climate",
+  "filters": { "year": { "gte": 2020 } },
+  "fields": ["id", "title.default", "year"],
+  "sort": { "year": "desc" },
+  "limit": 10
+}
+```
 
 ### `scanr_index_search`
 

@@ -1,7 +1,9 @@
+import difflib
 import os
 import time
-import yaml
 from typing import Literal
+
+import yaml
 from mcp.server.fastmcp.exceptions import FastMCPError
 from helpers.http import request
 from helpers.logger import get_logger
@@ -104,19 +106,56 @@ def field_get_infos(field: dict, field_name: str | None = None) -> dict:
         if field.get("ai_suggestion", {}).get("description"):
             infos["description"] = field["ai_suggestion"]["description"]
     # additional notes
-    if field.get("ai_suggestion", {}).get("notes"):
-        infos["notes"] = field["ai_suggestion"]["notes"]
+    notes = field.get("notes", field.get("ai_suggestion", {}).get("notes"))
+    if notes:
+        infos["notes"] = notes
     # cross reference
-    if field.get("cross_index"):
-        infos["cross_index"] = field["cross_index"]
+    cross_index = field.get("cross_index", field.get("ai_suggestion", {}).get("cross_index"))
+    if cross_index:
+        infos["cross_index"] = cross_index
+    examples = field.get("examples", field.get("example_values", field.get("example")))
+    if examples is None:
+        suggestion = field.get("ai_suggestion", {})
+        examples = suggestion.get("examples", suggestion.get("example_values", suggestion.get("example")))
+    if examples is not None:
+        infos["examples"] = examples
     return infos
+
+
+async def index_describe_field(index: str, field_name: str) -> dict:
+    """Return full schema metadata for a single field."""
+    fields = (await index_get_base_schema(index)).get("fields", {})
+    field = require_known_field(index, field_name, fields)
+    return {
+        "index": index,
+        "field": field_name,
+        **field_get_infos(field, field_name),
+    }
+
+
+def require_known_field(index: str, field_name: str, fields: dict) -> dict:
+    field = fields.get(field_name)
+    if not field or field.get("exclude", False):
+        suggestions = difflib.get_close_matches(field_name, index_known_fields_from(fields), n=3, cutoff=0.6)
+        raise FastMCPError(
+            {
+                "error": "unknown_field",
+                "message": f"Field {field_name!r} is not available in the {index} schema.",
+                "did_you_mean": suggestions,
+                "hint": "Use a field from scanr_get_schema or one of the suggested names.",
+            }
+        )
+    return field
+
+
+def index_known_fields_from(fields: dict) -> list[str]:
+    return [name for name, metadata in fields.items() if not metadata.get("exclude", False)]
 
 
 async def index_get_aggregation_field(index: str, field_name: str) -> str:
     """Return the exact Elasticsearch field path for a terms aggregation."""
-    field = (await index_get_base_schema(index)).get("fields", {}).get(field_name)
-    if not field or field.get("exclude", False):
-        raise FastMCPError(f"Field {field_name!r} is not available in the {index} schema.")
+    fields = (await index_get_base_schema(index)).get("fields", {})
+    field = require_known_field(index, field_name, fields)
 
     infos = field_get_infos(field, field_name)
     aggregation_field = infos.get("aggregation_field")
@@ -127,19 +166,43 @@ async def index_get_aggregation_field(index: str, field_name: str) -> str:
     return aggregation_field
 
 
-async def index_get_fields(index: str, filter: Literal["all", "primary", "secondary"] = "primary") -> dict:
+async def index_get_fields(
+    index: str,
+    filter: Literal["all", "primary", "secondary"] = "primary",
+    search: str | None = None,
+    prefix: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
     """
-    Get the schema for an index.
+    Get a compact, filtered page of the schema for an index.
     """
+    if not 1 <= limit <= 500:
+        raise FastMCPError("limit must be between 1 and 500.")
+    if offset < 0:
+        raise FastMCPError("offset must be non-negative.")
+    normalized_prefix = prefix.removesuffix("*").removesuffix(".") if prefix else None
+    search_text = search.casefold().strip() if search else None
     schema = await index_get_base_schema(index)
     fields = schema.get("fields", {})
-    return {
-        key: field_get_infos(field, key)
-        for key, field in fields.items()
-        if not field.get("exclude", False)
-        and (
-            filter == "all"
-            or (filter == "primary" and field.get("primary", False))
-            or (filter == "secondary" and not field.get("primary", False))
-        )
-    }
+    matches = []
+    for key, field in fields.items():
+        if field.get("exclude", False):
+            continue
+        if filter == "primary" and not field.get("primary", False):
+            continue
+        if filter == "secondary" and field.get("primary", False):
+            continue
+        if normalized_prefix and not (key == normalized_prefix or key.startswith(normalized_prefix + ".")):
+            continue
+        infos = field_get_infos(field, key)
+        description = infos.get("description", "")
+        if search_text and search_text not in key.casefold() and search_text not in description.casefold():
+            continue
+        compact = {"type": infos["type"]}
+        if infos.get("aggregation_field"):
+            compact["aggregation_field"] = infos["aggregation_field"]
+        if description:
+            compact["description"] = description[:160] + ("…" if len(description) > 160 else "")
+        matches.append((key, compact))
+    return dict(matches[offset : offset + limit])
