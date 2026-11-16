@@ -13,3 +13,17 @@ dependencies = [
 
 [tool.ty.environment]
 python = ".venv/Scripts/python.exe"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "respx>=0.23.1",
+]
+
+[tool.uv]
+# The Docker image runs `uv sync --frozen` and `uv run`: keep test dependencies out of it.
+default-groups = []
+
+[tool.pytest.ini_options]
+pythonpath = ["server"]
+testpaths = ["tests"]

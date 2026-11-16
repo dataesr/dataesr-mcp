@@ -2,6 +2,9 @@ CURRENT_VERSION=$(shell grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.
 DOCKER_IMAGE_NAME=dataesr/dataesr-mcp
 GHCR_IMAGE_NAME=ghcr.io/$(DOCKER_IMAGE_NAME)
 
+test:
+	uv run --group dev pytest
+
 build:
 	@echo "Building Docker image $(GHCR_IMAGE_NAME):$(CURRENT_VERSION)"
 	docker build -t $(GHCR_IMAGE_NAME):$(CURRENT_VERSION) -t $(GHCR_IMAGE_NAME):latest .

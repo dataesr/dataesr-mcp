@@ -88,6 +88,16 @@ Start MCP Inspector:
 npx -y @modelcontextprotocol/inspector
 ```
 
+The tools of each route (`/scanr`, `/match`, `/rag`, `/tableaux`), with example questions, arguments and responses, are described in [docs/tools.md](docs/tools.md).
+
+## Tests
+
+```bash
+make test   # uv run --group dev pytest
+```
+
+The tests in [tests/](tests) run the real application and mock every upstream service (Elasticsearch, schema files, affiliation matcher, catalogue API, GitHub), so they need no credentials or network. Each route has a test file (`test_scanr.py`, `test_match.py`, `test_rag.py`, `test_tableaux.py`) that goes through the MCP protocol with `tests/mcp_client.py`: `initialize`, `tools/list`, `tools/call`. `test_auth.py` covers the bearer token and the OAuth flows.
+
 ## Deployment
 
 The staging deployment is automated via GitHub Actions.
