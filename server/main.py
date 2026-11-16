@@ -9,6 +9,7 @@ from starlette.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount
 from helpers import credentials, oauth
+from helpers.http import close_client
 from tools.affiliation_matcher import match
 from tools.scanr import scanr
 from tools.catalogue import rag
@@ -17,7 +18,7 @@ from tools.tableaux import prototype as tableaux
 transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 # Create MCP servers
-scanr_mcp = FastMCP("scanr-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
+scanr_mcp = FastMCP("scanr-mcp", instructions=scanr.INSTRUCTIONS, streamable_http_path="/", json_response=True, transport_security=transport_security)
 matcher_mcp = FastMCP("matcher-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
 rag_mcp = FastMCP("rag-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
 tableaux_mcp = FastMCP("tableaux-mcp", streamable_http_path="/", json_response=True, transport_security=transport_security)
@@ -38,7 +39,10 @@ async def lifespan(app: Starlette):
         await stack.enter_async_context(matcher_mcp.session_manager.run())
         await stack.enter_async_context(rag_mcp.session_manager.run())
         await stack.enter_async_context(tableaux_mcp.session_manager.run())
-        yield
+        try:
+            yield
+        finally:
+            await close_client()
 
 
 # Middleware for bearer token authentication and per-route authorization

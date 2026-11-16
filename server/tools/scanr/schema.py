@@ -1,41 +1,66 @@
 import os
+import time
 import yaml
-import httpx
-from functools import lru_cache
 from typing import Literal
 from mcp.server.fastmcp.exceptions import FastMCPError
-from helpers.elastic import es_index_clean
+from helpers.http import request
+from helpers.logger import get_logger
+from tools.scanr.registry import schema_url
+
+logger = get_logger(__name__)
+
+SCHEMA_TTL = float(os.getenv("SCANR_SCHEMA_TTL", "3600"))
+SCHEMA_RETRY_AFTER = 300
+
+# index -> (expires_at, schema)
+_schema_cache: dict[str, tuple[float, dict]] = {}
 
 
-def index_get_schema_url(index: str) -> str:
-    """
-    Get the schema url for an index.
-    """
-    es_index = es_index_clean(index)
-    scanr_schema_url = os.getenv("SCANR_SCHEMAS_URL")
-    url = f"{scanr_schema_url}/{es_index}.yaml"
-    return url
+def clear_cache() -> None:
+    _schema_cache.clear()
 
 
-@lru_cache
-def index_get_base_schema(index: str) -> dict:
+async def index_get_base_schema(index: str) -> dict:
     """
-    Get the schema for an index.
+    Get the schema for an index, cached for SCHEMA_TTL seconds.
+    If a refresh fails, the last good schema is served until the next retry.
     """
-    index_schema_url = index_get_schema_url(index)
-    with httpx.Client() as client:
-        response = client.get(index_schema_url, timeout=30)
-        response.raise_for_status()
-        schema = yaml.safe_load(response.text)
-        return schema
+
+    now = time.monotonic()
+    cached = _schema_cache.get(index)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        schema = await _fetch_schema(index)
+    except FastMCPError:
+        if cached is None:
+            raise
+        logger.warning(f"Schema refresh failed for {index}, serving the cached schema.")
+        _schema_cache[index] = (now + SCHEMA_RETRY_AFTER, cached[1])
+        return cached[1]
+    _schema_cache[index] = (now + SCHEMA_TTL, schema)
+    return schema
 
 
-def index_get_description(index: str) -> str:
-    """
-    Get the description for an index.
-    """
-    schema = index_get_base_schema(index)
-    return schema.get("_meta", {}).get("description", "")
+async def _fetch_schema(index: str) -> dict:
+    response = await request("GET", schema_url(index), service="scanr-schemas", timeout=30)
+    if not response.is_success:
+        raise FastMCPError(
+            {"error": "upstream_error", "service": "scanr-schemas", "status": response.status_code, "message": index}
+        )
+    return yaml.safe_load(response.text)
+
+
+async def index_known_fields(index: str) -> set[str]:
+    """Names of the fields an index exposes, used to validate queries."""
+    fields = (await index_get_base_schema(index)).get("fields", {})
+    return {name for name, field in fields.items() if not field.get("exclude", False)}
+
+
+async def index_primary_fields(index: str) -> list[str]:
+    """Primary fields, which are returned by default in search results."""
+    fields = (await index_get_base_schema(index)).get("fields", {})
+    return [name for name, field in fields.items() if field.get("primary") and not field.get("exclude", False)]
 
 
 AGGREGATABLE_TYPES = {
@@ -87,9 +112,9 @@ def field_get_infos(field: dict, field_name: str | None = None) -> dict:
     return infos
 
 
-def index_get_aggregation_field(index: str, field_name: str) -> str:
+async def index_get_aggregation_field(index: str, field_name: str) -> str:
     """Return the exact Elasticsearch field path for a terms aggregation."""
-    field = index_get_base_schema(index).get("fields", {}).get(field_name)
+    field = (await index_get_base_schema(index)).get("fields", {}).get(field_name)
     if not field or field.get("exclude", False):
         raise FastMCPError(f"Field {field_name!r} is not available in the {index} schema.")
 
@@ -102,11 +127,11 @@ def index_get_aggregation_field(index: str, field_name: str) -> str:
     return aggregation_field
 
 
-def index_get_fields(index: str, filter: Literal["all", "primary", "secondary"] = "primary") -> dict:
+async def index_get_fields(index: str, filter: Literal["all", "primary", "secondary"] = "primary") -> dict:
     """
     Get the schema for an index.
     """
-    schema = index_get_base_schema(index)
+    schema = await index_get_base_schema(index)
     fields = schema.get("fields", {})
     return {
         key: field_get_infos(field, key)

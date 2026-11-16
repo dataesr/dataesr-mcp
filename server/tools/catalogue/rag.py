@@ -1,8 +1,7 @@
 import os
-import httpx
 from pydantic import Field
-from urllib.parse import quote
 from mcp.server import FastMCP
+from helpers.http import request_json
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,36 +29,30 @@ def register(mcp: FastMCP):
         They contains data, statistics and numbers about the education and research french landscape.
         """
 
-        query_url = os.path.join(CATALOGUE_API_URL, "rag")
-        query_url += f"?q={quote(query)}"
-        if top_k:
-            query_url += f"&topK={top_k}"
+        logger.debug(f"Sending query to Catalogue RAG: {query}")
+        params = {"q": query, "topK": top_k}
         if use_reranker:
-            query_url += "&useRerank=true"
+            params["useRerank"] = "true"
         if use_hybrid_search:
-            query_url += "&useHybrid=true"
+            params["useHybrid"] = "true"
 
-        logger.debug(f"Sending query to Catalogue RAG: {query_url}")
-        with httpx.Client() as client:
-            response = client.get(query_url, headers=HEADERS)
-            response.raise_for_status()
-            data = response.json()
-            logger.debug(f"Received response from Catalogue RAG: {data}")
+        data = await request_json("GET", f"{CATALOGUE_API_URL.rstrip('/')}/rag", service="catalogue", params=params, headers=HEADERS, timeout=30)
+        logger.debug(f"Received response from Catalogue RAG: {data}")
 
-            sources = [
-                {
-                    "distance": source.get("distance"),
-                    "document": source.get("document"),
-                    "metadata": {
-                        "title": source.get("metadata", {}).get("title", ""),
-                        "section_title": source.get("metadata", {}).get("section_title", ""),
-                        "publication_date": source.get("metadata", {}).get("publication_date", ""),
-                        "publication_type": source.get("metadata", {}).get("publication_type", ""),
-                        "file_access": source.get("metadata", {}).get("file_access", ""),
-                        "file_url": source.get("metadata", {}).get("file_url", ""),
-                        "chunk_type": source.get("metadata", {}).get("chunk_type", ""),
-                    },
-                }
-                for source in data.get("sources", [])
-            ]
-            return sources
+        sources = [
+            {
+                "distance": source.get("distance"),
+                "document": source.get("document"),
+                "metadata": {
+                    "title": source.get("metadata", {}).get("title", ""),
+                    "section_title": source.get("metadata", {}).get("section_title", ""),
+                    "publication_date": source.get("metadata", {}).get("publication_date", ""),
+                    "publication_type": source.get("metadata", {}).get("publication_type", ""),
+                    "file_access": source.get("metadata", {}).get("file_access", ""),
+                    "file_url": source.get("metadata", {}).get("file_url", ""),
+                    "chunk_type": source.get("metadata", {}).get("chunk_type", ""),
+                },
+            }
+            for source in data.get("sources", [])
+        ]
+        return sources

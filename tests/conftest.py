@@ -36,7 +36,6 @@ import respx  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
-from helpers import elastic  # noqa: E402
 from mcp_client import McpSession  # noqa: E402
 from tools.scanr import schema  # noqa: E402
 from tools.tableaux import prototype  # noqa: E402
@@ -52,8 +51,7 @@ def http():
 @pytest.fixture
 def upstream():
     """Mock router for every outgoing HTTP call; a call that is not mocked fails the test."""
-    schema.index_get_base_schema.cache_clear()
-    elastic.es_get_flat_mapping.cache_clear()
+    schema.clear_cache()
     prototype.repository._cache.clear()
     with respx.mock(assert_all_called=False) as router:
         yield router

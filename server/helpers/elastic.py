@@ -1,17 +1,38 @@
 import os
-import httpx
 import copy
-from functools import lru_cache
+import difflib
 from mcp.server.fastmcp.exceptions import FastMCPError
+from helpers.http import request
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
 
 ES_URL = os.environ.get("ES_URL")
 ES_API_KEY = os.environ.get("ES_API_KEY")
+ES_REQUEST_TIMEOUT = 15
+ES_QUERY_TIMEOUT = "10s"
 ES_MAX_SIZE = 20
-
-ES_FIELDS_SKIP = ["normalize", "autocomplete", "encode"]
+ES_MAX_FROM_PLUS_SIZE = 1000
+ES_MAX_AGG_SIZE = 100
+ES_MAX_AGG_DEPTH = 3
+ES_ALLOWED_KEYS = {"query", "size", "from", "_source", "sort", "aggs", "aggregations", "track_total_hits"}
+ES_BANNED_KEYS = {"runtime_mappings", "scroll", "pit"}
+ES_BANNED_PREFIXES = ("script",)
+ES_TERMS_AGGS = ("terms", "significant_terms", "multi_terms")
+ES_FIELD_CLAUSES = {
+    "term",
+    "terms",
+    "match",
+    "match_phrase",
+    "match_bool_prefix",
+    "range",
+    "prefix",
+    "wildcard",
+    "regexp",
+    "fuzzy",
+    "exists",
+}
+ES_CLAUSE_OPTIONS = {"field", "boost", "_name"}
 
 ES_ERROR_HINTS = {
     "parsing_exception": "The query syntax is invalid. Check the query structure.",
@@ -21,10 +42,6 @@ ES_ERROR_HINTS = {
 }
 
 
-def es_index_clean(index: str) -> str:
-    return index.replace("_", "-")
-
-
 def es_headers() -> dict:
     headers = {"Content-Type": "application/json"}
     if ES_API_KEY:
@@ -32,80 +49,109 @@ def es_headers() -> dict:
     return headers
 
 
-async def es_search(index: str, query_body: dict, validate: bool = True) -> dict:
+async def es_search(es_index: str, query_body: dict, known_fields: set[str] | None = None) -> tuple[dict, dict]:
     """
-    Execute an Elasticsearch query against an index.
+    Run a guarded search on an Elasticsearch index.
+    Returns the response and the limits that were clamped to run the query.
     """
-    es_index = es_index_clean(index)
+
+    body, clamps = es_guard(query_body, known_fields)
+    body["timeout"] = ES_QUERY_TIMEOUT
     url = f"{ES_URL}/{es_index}/_search"
-    fixed_body = es_fix_and_validate(index, query_body) if validate else query_body
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=es_headers(), json=fixed_body, timeout=30)
-        if not response.is_success:
-            try:
-                body = response.json()
-                error_type = body.get("error", {}).get("type", f"http_{response.status_code}")
-                reason = (
-                    body.get("error", {}).get("root_cause", [{}])[0].get("reason")
-                    or body.get("error", {}).get("reason")
-                    or response.text
-                )
-            except Exception:
-                error_type = f"http_{response.status_code}"
-                reason = response.text
-            hint = ES_ERROR_HINTS.get(error_type, "Fix the query and try again.")
-            logger.error(f"Invalid query: {error_type}\n Reason: {reason}\n Hint: {hint}")
-            raise FastMCPError(
-                {
-                    "error": error_type,
-                    "message": reason,
-                    "hint": hint,
-                }
-            )
-        return response.json()
+    response = await request(
+        "POST", url, service="elasticsearch", headers=es_headers(), json=body, timeout=ES_REQUEST_TIMEOUT
+    )
+    if not response.is_success:
+        try:
+            error = response.json().get("error", {})
+            error_type = error.get("type", f"http_{response.status_code}")
+            reason = error.get("root_cause", [{}])[0].get("reason") or error.get("reason") or response.text
+        except Exception:
+            error_type = f"http_{response.status_code}"
+            reason = response.text
+        hint = ES_ERROR_HINTS.get(error_type, "Fix the query and try again.")
+        logger.error(f"Invalid query: {error_type}\n Reason: {reason}\n Hint: {hint}")
+        raise FastMCPError({"error": error_type, "message": reason, "hint": hint})
+    return response.json(), clamps
 
 
-def es_fix_and_validate(index: str, query_body: dict) -> dict:
+def es_guard(query_body: dict, known_fields: set[str] | None = None) -> tuple[dict, dict]:
     """
-    Fix and validate an Elasticsearch query.
+    Reject unsafe or unsupported request bodies, clamp limits, and check field names when the schema is known.
+    Returns the body to send and the clamped limits.
     """
-    logger.debug(f"Original query: {query_body}")
-    fixed_body = es_fix_query(query_body)
-    logger.debug(f"Fixed query: {fixed_body}")
-    validated = es_validate_query(index, fixed_body.get("query", {}))
-    if not validated.get("valid", False):
-        explanations = [e.get("explanation", "") for e in validated.get("explanations", [])]
-        logger.error(f"Invalid query: {explanations}")
-        raise FastMCPError(
-            {
-                "error": "invalid_query",
-                "reason": "; ".join(explanations),
-                "hint": "Fix the query and try again.",
-            }
+
+    unknown_keys = sorted(set(query_body) - ES_ALLOWED_KEYS)
+    if unknown_keys:
+        raise _rejected(
+            "unsupported_key",
+            f"Unsupported top-level keys: {unknown_keys}.",
+            f"Only these keys are allowed: {sorted(ES_ALLOWED_KEYS)}.",
         )
-    return fixed_body
+    banned = _banned_keys(query_body)
+    if banned:
+        raise _rejected(
+            "banned_key",
+            f"Unsupported keys: {sorted(set(banned))}.",
+            "Scripts, runtime mappings, scroll and point-in-time are not available. Use filters and aggregations instead.",
+        )
+
+    clamps: dict = {}
+    body = es_fix_query(query_body, clamps)
+
+    from_size = body.get("from", 0) + body.get("size", 10)
+    if from_size > ES_MAX_FROM_PLUS_SIZE:
+        raise _rejected(
+            "deep_paging",
+            f"from + size = {from_size} exceeds the limit of {ES_MAX_FROM_PLUS_SIZE}.",
+            "Narrow the query with filters instead of paging deeper.",
+        )
+    depth = _agg_depth(body.get("aggs") or body.get("aggregations") or {})
+    if depth > ES_MAX_AGG_DEPTH:
+        raise _rejected(
+            "aggregation_too_deep",
+            f"Aggregations are nested {depth} levels deep; the limit is {ES_MAX_AGG_DEPTH}.",
+            "Flatten the aggregation or aggregate in several requests.",
+        )
+    if known_fields is not None:
+        es_validate_fields(body, known_fields)
+    return body, clamps
 
 
-def es_validate_query(index: str, query: dict, raise_error: bool = False) -> dict:
-    """Hit ES _validate/query to check syntax before executing."""
-    if not query:
-        return {"valid": False, "explanations": [{"explanation": "Query is empty"}]}
-
-    es_index = es_index_clean(index)
-    url = f"{ES_URL}/{es_index}/_validate/query?explain=true"
-    body = {"query": query}
-    logger.debug(f"Validating query: {body}")
-    with httpx.Client() as client:
-        response = client.post(url, headers=es_headers(), json=body, timeout=30)
-        return response.json()
+def _rejected(error: str, message: str, hint: str) -> FastMCPError:
+    return FastMCPError({"error": error, "message": message, "hint": hint})
 
 
-def es_fix_query(query_body: dict) -> dict:
+def _banned_keys(obj) -> list[str]:
+    found = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in ES_BANNED_KEYS or key.startswith(ES_BANNED_PREFIXES):
+                found.append(key)
+            found.extend(_banned_keys(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(_banned_keys(item))
+    return found
+
+
+def _agg_depth(aggs) -> int:
+    if not isinstance(aggs, dict):
+        return 0
+    return max(
+        (1 + _agg_depth(agg.get("aggs") or agg.get("aggregations")) for agg in aggs.values() if isinstance(agg, dict)),
+        default=0,
+    )
+
+
+def es_fix_query(query_body: dict, clamps: dict | None = None) -> dict:
     """
     Auto-fix common LLM query mistakes before sending to ES.
-    Modifies the query in-place and returns it.
+    Clamped limits are recorded in clamps when it is given. The input is not modified.
     """
+
     query = copy.deepcopy(query_body)
+    report = clamps if clamps is not None else {}
 
     # size nested inside aggs, move it to root
     if "aggs" in query and "size" in query.get("aggs", {}):
@@ -114,7 +160,10 @@ def es_fix_query(query_body: dict) -> dict:
     # size limited to ES_MAX_SIZE
     if "size" in query and query["size"] > ES_MAX_SIZE:
         logger.warning(f"Query size {query['size']} > {ES_MAX_SIZE}, setting to {ES_MAX_SIZE}")
+        report["size_capped_from"] = query["size"]
         query["size"] = ES_MAX_SIZE
+
+    _cap_agg_sizes(query.get("aggs") or query.get("aggregations"), report)
 
     # must with only term/range/bool clauses → move to filter
     if "query" in query and "bool" in query["query"]:
@@ -148,108 +197,75 @@ def es_fix_query(query_body: dict) -> dict:
     return query
 
 
-def es_get_mapping(index: str) -> dict:
-    """
-    Get the mapping for an index.
-    """
-    es_index = es_index_clean(index)
-    url = f"{ES_URL}/{es_index}/_mapping"
-    with httpx.Client() as client:
-        response = client.get(url, headers=es_headers(), timeout=30)
-        response.raise_for_status()
-        return response.json()
-
-
-@lru_cache(maxsize=50)
-def es_get_flat_mapping(index: str) -> dict:
-    """
-    Get the flat mapping for an index.
-    """
-    raw_mapping = es_get_mapping(index)
-    actual_index = list(raw_mapping.keys())[0]
-    properties = raw_mapping[actual_index]["mappings"].get("properties", {})
-    return _flatten_mapping(properties)
-
-
-def es_validate_fields(index: str, es_query: dict, raise_error: bool = False) -> list[str]:
-    """
-    Validate that the fields in the query exist in the index mapping.
-    Returns a list of invalid fields.
-    """
-    mapping = es_get_flat_mapping(index)
-    used = _extract_fields_from_query(es_query)
-
-    META_FIELDS = {"_score", "_id", "_source", "_index", "_type"}
-
-    invalid_fields = []
-    for field in used:
-        if field in META_FIELDS:
+def _cap_agg_sizes(aggs, report: dict) -> None:
+    if not isinstance(aggs, dict):
+        return
+    for name, agg in aggs.items():
+        if not isinstance(agg, dict):
             continue
-        base = field.removesuffix(".keyword")
-        if base not in mapping:
-            invalid_fields.append(field)
+        for kind in ES_TERMS_AGGS:
+            spec = agg.get(kind)
+            if isinstance(spec, dict) and isinstance(spec.get("size"), int) and spec["size"] > ES_MAX_AGG_SIZE:
+                report.setdefault("agg_size_capped_from", {})[name] = spec["size"]
+                spec["size"] = ES_MAX_AGG_SIZE
+        _cap_agg_sizes(agg.get("aggs") or agg.get("aggregations"), report)
 
-    if raise_error and invalid_fields:
+
+def es_validate_fields(query_body: dict, known_fields: set[str]) -> None:
+    """Reject field names that are not in the index schema, with the closest valid names as suggestions."""
+    allowed = set(known_fields)
+    for field in known_fields:
+        parts = field.split(".")
+        allowed.update(".".join(parts[:i]) for i in range(1, len(parts)))
+
+    unknown = sorted(f for f in _query_fields(query_body) if f not in allowed)
+    if unknown:
+        candidates = sorted(known_fields)
         raise FastMCPError(
             {
-                "error": "invalid_fields",
-                "message": f"The following fields do not exist in {index}: {invalid_fields}. You MUST call {index}_get_schema to get the list of valid fields, then retry the query using only existing fields.",
-                "invalid_fields": invalid_fields,
+                "error": "unknown_field",
+                "message": f"Unknown field(s): {unknown}.",
+                "did_you_mean": {field: difflib.get_close_matches(field, candidates, n=3, cutoff=0.6) for field in unknown},
+                "hint": "Use only fields returned by scanr_get_schema, and retry with the suggested names where they fit.",
             }
         )
-    return invalid_fields
 
 
-def _flatten_mapping(properties: dict, prefix: str = "") -> dict:
-    """Recursively flatten nested ES properties into dot-notation field paths."""
-    fields = {}
-    for field_name, field_def in properties.items():
-        full_path = f"{prefix}.{field_name}" if prefix else field_name
-        if any(skip in full_path for skip in ES_FIELDS_SKIP):
-            continue
-        if field_def.get("type"):
-            entry = {"type": field_def["type"]}
-            if "keyword" in field_def.get("fields", {}):
-                entry["keyword"] = True
-            fields[full_path] = entry
-        if "properties" in field_def:
-            fields.update(_flatten_mapping(field_def["properties"], full_path))
-    return fields
-
-
-def _extract_fields_from_query(obj) -> set[str]:
-    """
-    Recursively walk the ES query dict and extract any field names used.
-    Handles: match, term, terms, range, multi_match, _source, sort, aggs, etc.
-    """
-    found = set()
-
+def _query_fields(obj) -> set[str]:
+    """Collect the field names a query body reads: clause fields, sort, _source, field lists and aggregation fields."""
+    found: set[str] = set()
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key in ("term", "terms", "match", "range", "prefix", "wildcard", "exists", "fuzzy", "regexp"):
-                if isinstance(value, dict):
-                    if "field" in value:
-                        found.add(value["field"])
-                    else:
-                        found.update(value.keys())
+            if key in ES_FIELD_CLAUSES and isinstance(value, dict):
+                names = [value["field"]] if isinstance(value.get("field"), str) else value.keys()
+                found.update(_normalize_field(n) for n in names if n not in ES_CLAUSE_OPTIONS)
+            elif key == "field" and isinstance(value, str):
+                found.add(_normalize_field(value))
             elif key == "fields" and isinstance(value, list):
-                found.update(f.split("^")[0].replace(".*", "") for f in value)
+                found.update(_normalize_field(f) for f in value if isinstance(f, str))
             elif key == "_source":
                 if isinstance(value, list):
-                    found.update(f.split("^")[0].replace(".*", "") for f in value)
+                    found.update(_normalize_field(f) for f in value if isinstance(f, str))
                 elif isinstance(value, dict):
                     for sub in ("includes", "excludes"):
-                        if isinstance(value.get(sub), list):
-                            found.update(v.split("^")[0].replace(".*", "") for v in value[sub])
+                        found.update(_normalize_field(f) for f in value.get(sub, []) if isinstance(f, str))
             elif key == "sort" and isinstance(value, list):
                 for item in value:
-                    if isinstance(item, dict):
-                        found.update(item.keys())
+                    if isinstance(item, str):
+                        found.add(_normalize_field(item))
+                    elif isinstance(item, dict):
+                        found.update(_normalize_field(k) for k in item)
             else:
-                found.update(_extract_fields_from_query(value))
-
+                found.update(_query_fields(value))
     elif isinstance(obj, list):
         for item in obj:
-            found.update(_extract_fields_from_query(item))
+            found.update(_query_fields(item))
+    return {f for f in found if f}
 
-    return found
+
+def _normalize_field(name: str) -> str:
+    """Map a query field reference to the schema field name ("" for meta fields and wildcards)."""
+    name = name.split("^")[0].removesuffix(".*").removesuffix(".keyword")
+    if not name or name.startswith("_") or "*" in name:
+        return ""
+    return name

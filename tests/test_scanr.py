@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from tools.scanr import schema
+
 SCHEMA_YAML = """
 _meta:
   description: Scientific publications
@@ -37,7 +39,6 @@ SEARCH_RESPONSE = {
 def es(upstream):
     """Mock the schema file and the scanr-publications Elasticsearch index."""
     upstream.get("https://schemas.test/scanr-publications.yaml").respond(text=SCHEMA_YAML)
-    upstream.post("https://es.test/scanr-publications/_validate/query").respond(json={"valid": True})
     return upstream.post("https://es.test/scanr-publications/_search").respond(json=SEARCH_RESPONSE)
 
 
@@ -47,7 +48,6 @@ def sent_body(route) -> dict:
 
 def test_lists_the_scanr_tools(connect):
     assert set(connect("/scanr").tool_names()) == {
-        "scanr_search",
         "scanr_get_schema",
         "scanr_resolve",
         "scanr_index_search",
@@ -85,8 +85,39 @@ def test_index_search_returns_total_and_hits(connect, es):
 
 def test_index_search_size_is_capped_at_20(connect, es):
     query = {"query": {"match_all": {}}, "size": 500}
-    connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query})
+    result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query}).data
     assert sent_body(es)["size"] == 20
+    assert result["clamped"]["size_capped_from"] == 500
+
+
+def test_index_search_defaults_source_to_primary_fields(connect, es):
+    connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": {"query": {"match_all": {}}}})
+    assert sent_body(es)["_source"] == ["id", "title.default", "year"]
+
+
+def test_deep_paging_is_rejected_before_searching(connect, es):
+    query = {"query": {"match_all": {}}, "from": 1000, "size": 20}
+    result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query})
+    assert result.is_error
+    assert not es.called
+
+
+def test_scripts_are_rejected_before_searching(connect, es):
+    query = {"query": {"match_all": {}}, "script_fields": {"x": {"script": {"source": "1"}}}}
+    result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query})
+    assert result.is_error
+    assert not es.called
+
+
+def test_stale_schema_is_served_when_refresh_fails(connect, upstream, monkeypatch):
+    monkeypatch.setattr(schema, "SCHEMA_TTL", 0)
+    route = upstream.get("https://schemas.test/scanr-publications.yaml").respond(text=SCHEMA_YAML)
+    session = connect("/scanr")
+    assert not session.call("scanr_get_schema", {"index": "scanr_publications"}).is_error
+    route.respond(500)
+    result = session.call("scanr_get_schema", {"index": "scanr_publications"})
+    assert not result.is_error
+    assert "title.default" in result.data["fields"]
 
 
 def test_field_values_uses_the_schema_aggregation_field(connect, es):
@@ -102,25 +133,6 @@ def test_field_values_rejects_a_field_outside_the_schema(connect, es):
     assert "not available" in result.text
 
 
-@pytest.mark.parametrize(
-    ("arguments", "expected"),
-    [
-        ({"operation": "schema"}, "fields"),
-        ({"operation": "values", "values_field": "year"}, "buckets"),
-        ({"operation": "search", "search_query": {"query": {"match_all": {}}, "size": 0}}, "hits"),
-    ],
-)
-def test_scanr_search_dispatches_on_operation(connect, es, arguments, expected):
-    result = connect("/scanr").call("scanr_search", {"index": "scanr_publications", **arguments}).data
-    assert expected in result
-
-
-def test_scanr_search_requires_the_operation_input(connect, es):
-    result = connect("/scanr").call("scanr_search", {"index": "scanr_publications", "operation": "search"})
-    assert result.is_error
-    assert "search_query" in result.text
-
-
 def test_elasticsearch_error_is_reported_with_a_hint(connect, es):
     es.respond(400, json={"error": {"type": "parsing_exception", "reason": "bad clause"}})
     result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": {"query": {"match_all": {}}}})
@@ -129,13 +141,11 @@ def test_elasticsearch_error_is_reported_with_a_hint(connect, es):
     assert "Check the query structure" in result.text
 
 
-def test_invalid_query_is_rejected_before_searching(connect, es, upstream):
-    upstream.post("https://es.test/scanr-publications/_validate/query").respond(
-        json={"valid": False, "explanations": [{"explanation": "unknown field"}]}
-    )
-    result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": {"query": {"term": {"nope": 1}}}})
+def test_unknown_field_is_rejected_locally_with_a_suggestion(connect, es):
+    query = {"query": {"term": {"titel.default": "x"}}}
+    result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query})
     assert result.is_error
-    assert "unknown field" in result.text
+    assert "title.default" in result.text
     assert not es.called
 
 

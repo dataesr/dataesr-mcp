@@ -4,7 +4,7 @@ The server exposes four MCP endpoints. Each is a separate MCP server with its ow
 
 | Route | Purpose | Tools |
 | --- | --- | --- |
-| `/scanr` | Query the scanR indexes | `scanr_get_schema`, `scanr_resolve`, `scanr_index_search`, `scanr_field_values`, `scanr_search` |
+| `/scanr` | Query the scanR indexes | `scanr_get_schema`, `scanr_resolve`, `scanr_index_search`, `scanr_field_values` |
 | `/match` | Match affiliation strings to reference systems | `get_affiliation_match` |
 | `/rag` | Search Ministry publications | `flash_rag` |
 | `/tableaux` | Dashboard prototyping guidance | `list_guidance`, `get_guidance`, `list_templates`, `get_template`, `list_data_sources`, `get_data_source_guide`, `list_dashboard_components`, `list_chart_examples`, `list_existing_boards`, `recommend_architecture`, `validate_dashboard_spec`, `validate_board_bundle` |
@@ -31,7 +31,7 @@ You normally don't call these tools yourself: an AI assistant connected to the e
 3. `scanr_field_values`: check the real values of a categorical field (for example a project type) before filtering on it.
 4. `scanr_index_search`: run the actual query or aggregation.
 
-`scanr_search` does all four through its `operation` argument (`schema`, `resolve`, `values`, `search`). The dedicated tools are equivalent.
+The workflow and disambiguation rules are sent to the assistant as server instructions and are also available as the `scanr_guide` prompt.
 
 ### Example questions
 
@@ -41,7 +41,7 @@ You normally don't call these tools yourself: an AI assistant connected to the e
 
 ### `scanr_get_schema`
 
-Arguments: `index`, and optionally `schema_filter` (`all` by default, or `primary` / `secondary` to narrow).
+Arguments: `index`, and optionally `schema_filter` (`primary` by default, or `all` / `secondary`). The schema is cached for one hour (`SCANR_SCHEMA_TTL` seconds); if a refresh fails, the last good copy is served.
 
 ```json
 { "index": "scanr_publications", "schema_filter": "primary" }
@@ -67,7 +67,7 @@ Arguments: `index`, and optionally `schema_filter` (`all` by default, or `primar
 
 ### `scanr_resolve`
 
-Returns up to 5 candidates (ids and labels) for a name. If several come back, the assistant is told to ask you which one is meant.
+Returns up to `limit` candidates (ids and labels, 5 by default, 20 at most) for a name. If several come back, the assistant is told to ask you which one is meant.
 
 ```json
 { "index": "scanr_organizations", "resolve_query": "Université de Lorraine" }
@@ -102,7 +102,7 @@ A non-zero `sum_other_doc_count` means other values exist that are not listed.
 
 ### `scanr_index_search`
 
-Runs an Elasticsearch request body against one index. At most 20 hits are returned (larger `size` values are lowered to 20). For counts and distributions, set `size` to 0 and use `aggs`.
+Runs an Elasticsearch request body against one index. At most 20 hits are returned, and `_source` defaults to the index's primary fields. Requests are checked before they are sent: only top-level keys such as `query`, `aggs`, `sort`, `size` and `from` are accepted, `script`, `runtime_mappings`, `scroll` and `pit` are refused, `from + size` is limited to 1000, aggregation nesting to 3 levels and bucket sizes to 100, and unknown field names are rejected with a suggestion. Each value that was changed is reported under `clamped` (for example `"size_capped_from": 500`). Long strings and lists are truncated, and `truncated: true` with a hint appears when the response is cut to fit its size budget. For counts and distributions, set `size` to 0 and use `aggs`.
 
 Publications per year:
 
