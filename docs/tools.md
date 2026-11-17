@@ -7,7 +7,6 @@ The server exposes four MCP endpoints. Each is a separate MCP server with its ow
 | `/scanr` | Query the scanR indexes | `scanr_list_indexes`, `scanr_get_schema`, `scanr_describe_field`, `scanr_resolve`, `scanr_query`, `scanr_index_search`, `scanr_field_values` |
 | `/match` | Match affiliation strings to reference systems | `get_affiliation_match` |
 | `/rag` | Search Ministry publications | `flash_rag` |
-| `/tableaux` | Dashboard prototyping guidance | `list_guidance`, `get_guidance`, `list_templates`, `get_template`, `list_data_sources`, `get_data_source_guide`, `list_dashboard_components`, `list_chart_examples`, `list_existing_boards`, `recommend_architecture`, `validate_dashboard_spec`, `validate_board_bundle` |
 
 You normally don't call these tools yourself: an AI assistant connected to the endpoint picks them. The examples below show what you can ask and what the tools receive and return (responses are shortened and illustrative).
 
@@ -230,51 +229,3 @@ Finds the passages of French Ministry of Higher Education and Research publicati
 ```
 
 A smaller `distance` means a closer match.
-
-## /tableaux
-
-These tools read the prototyping conventions of the `dataesr/tableaux` repository (cached 5 minutes) and validate dashboard manifests. They never run code.
-
-| Tool | Use |
-| --- | --- |
-| `list_guidance` | Start here: lists the guidance documents |
-| `get_guidance(guidance_id)` | Content of one document |
-| `list_templates` / `get_template(template_id)` | Board templates and their files |
-| `list_data_sources` / `get_data_source_guide(source_id)` | Data sources and whether a prototype may use them without approval |
-| `list_dashboard_components` | Reusable components |
-| `list_chart_examples` | Chart examples (which to copy, which to avoid) |
-| `list_existing_boards` | Existing board ids, to avoid a collision |
-| `recommend_architecture(data_sources)` | Fixtures first, plus the approvals a real source needs |
-| `validate_dashboard_spec(spec)` | Validate a `board.manifest.json` against the repository schema |
-| `validate_board_bundle(board_id)` | Static checks on a board's files in the repository |
-
-Example: `get_guidance`
-
-```json
-{ "guidance_id": "agents" }
-```
-
-```json
-{ "repository": "dataesr/tableaux", "ref": "staging", "id": "agents", "title": "Agents", "path": "AGENTS.md", "content": "# ..." }
-```
-
-Example: `validate_dashboard_spec`
-
-```json
-{
-  "spec": {
-    "schema_version": 1,
-    "id": "research-funding",
-    "name": "Research funding",
-    "description": "Funding overview",
-    "data_mode": "fixtures-dummy",
-    "data_sources": ["board-fixtures"],
-    "routes": [{ "method": "GET", "path": "/research-funding/overview/summary", "description": "Summary" }],
-    "features": ["filters"]
-  }
-}
-```
-
-```json
-{ "repository": "dataesr/tableaux", "ref": "staging", "valid": true, "errors": [], "warnings": [] }
-```
