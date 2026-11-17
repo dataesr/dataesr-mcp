@@ -12,7 +12,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def get_affiliation_match(
         affiliation: str = Field(description="Affiliation string to look for a match"),
-        reference: Literal["country", "grid", "ror", "rnsr", "paysage"] = Field(
+        reference: Literal["country", "grid", "ror", "rnsr"] = Field(
             description="Reference system to match against",
             default="ror",
         ),

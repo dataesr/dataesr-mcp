@@ -177,7 +177,7 @@ Invalid queries return an error with a hint (for example `parsing_exception`: "T
 
 ### `get_affiliation_match`
 
-Matches an affiliation string against a reference system: `ror` (default), `grid`, `rnsr`, `paysage` or `country`. Use it to harmonize affiliations in a corpus (e.g. "Laboratoire de physique, Univ. Lorraine, Nancy" → a ROR or RNSR id).
+Matches an affiliation string against a reference system: `ror` (default), `grid`, `rnsr` or `country`. Use it to harmonize affiliations in a corpus (e.g. "Laboratoire de physique, Univ. Lorraine, Nancy" → a ROR or RNSR id).
 
 ```json
 { "affiliation": "Laboratoire de physique, Université de Lorraine, Nancy", "reference": "rnsr" }
