@@ -70,6 +70,7 @@ AGGREGATABLE_TYPES = {
     "short",
     "integer",
     "long",
+    "number",
     "unsigned_long",
     "half_float",
     "float",
