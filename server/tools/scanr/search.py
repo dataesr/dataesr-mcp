@@ -203,10 +203,13 @@ async def index_query(
     bool_query: dict = {}
 
     if text:
-        text_fields = [
-            name for name, metadata in declared_fields.items()
-            if not metadata.get("exclude", False) and metadata.get("type") == "text"
-        ]
+        search_config = raw_schema.get("search", {})
+        text_fields = search_config.get("fields", [])
+        if not text_fields:
+            text_fields = [
+                name for name, metadata in declared_fields.items()
+                if not metadata.get("exclude", False) and metadata.get("type") == "text"
+            ]
         if not text_fields:
             raise FastMCPError(f"No searchable text fields are declared for {index}.")
         bool_query["must"] = [{"multi_match": {"query": text, "fields": text_fields}}]
