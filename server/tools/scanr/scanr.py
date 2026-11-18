@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from helpers.elastic import es_search
@@ -17,9 +17,8 @@ Workflow:
    Call scanr_describe_field when full notes, examples or cross-index links are needed.
 3. To look up an entity by name before filtering another index by its ID, call scanr_resolve.
 4. To check which values a categorical field holds, call scanr_field_values.
-5. Prefer scanr_query for ordinary text searches, filters, sorting, pagination and aggregations.
-   Use scanr_index_search for Elasticsearch requests that need advanced query features.
-   For counts or distributions, use an aggregation.
+5. Use scanr_index_search for all searches, filters, sorting, pagination and aggregations.
+   For counts or distributions, use an aggregation in the aggs parameter.
 
 Ask the user before proceeding when a request admits materially different meanings (for example,
 "regional projects" may mean located in a region, funded by a regional body, or involving participants
@@ -122,34 +121,6 @@ def register(mcp: FastMCP):
     async def scanr_index_search(index: ScanrIndex, search_query: dict) -> dict:
         """Execute an Elasticsearch query against the selected scanR index."""
         return await search.index_search(index, search_query)
-
-    @mcp.tool(
-        name="scanr_query",
-        description="Build a safe scanR query from text, exact/range filters, fields, sort, cursor and grouped metrics. Use scanr_index_search for advanced Elasticsearch features.",
-    )
-    async def scanr_query(
-        index: ScanrIndex,
-        text: Annotated[str | None, Field(description="Optional full-text search across declared text fields.")] = None,
-        filters: Annotated[
-            dict | None,
-            Field(description="Field filters: scalar or list for exact values, or {gte, lte, gt, lt} for ranges."),
-        ] = None,
-        fields: Annotated[list[str] | None, Field(description="Fields to return; defaults to primary fields.")] = None,
-        sort: Annotated[
-            dict[str, Literal["asc", "desc"]] | None,
-            Field(description="Sort fields mapped to asc or desc. Required when using cursor."),
-        ] = None,
-        limit: Annotated[int, Field(ge=1, le=50, description="Number of hits, from 1 to 50.")] = 10,
-        cursor: Annotated[
-            list[Any] | None, Field(description="search_after values returned as next_cursor by the previous page.")
-        ] = None,
-        aggregate: Annotated[
-            dict | None,
-            Field(description="Optional {group_by: field or fields, metric: count or {type, field}} aggregation."),
-        ] = None,
-    ) -> dict:
-        """Search scanR with structured filters and optional aggregations."""
-        return await search.index_query(index, text, filters, fields, sort, limit, cursor, aggregate)  # ty: ignore[invalid-argument-type]
 
     @mcp.tool(
         name="scanr_field_values",

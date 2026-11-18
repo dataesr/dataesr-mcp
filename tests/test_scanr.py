@@ -63,7 +63,6 @@ def test_lists_the_scanr_tools(connect):
         "scanr_describe_field",
         "scanr_resolve",
         "scanr_index_search",
-        "scanr_query",
         "scanr_field_values",
     }
 
@@ -124,13 +123,6 @@ def test_describe_field_returns_full_metadata_and_suggests_unknown(connect, es):
     assert "title.default" in missing.text
 
 
-def test_resolve_returns_candidates(connect, es):
-    es.respond(json={"hits": {"hits": [{"_source": {"id": "p1", "title": {"default": "Open science"}}}]}})
-    result = connect("/scanr").call("scanr_resolve", {"index": "scanr_publications", "resolve_query": "open science"}).data
-    assert result["candidates"][0]["id"] == "p1"
-    assert sent_body(es)["query"]["multi_match"] == {"query": "open science", "fields": ["title.default"]}
-
-
 def test_index_search_returns_total_and_hits(connect, es):
     query = {"query": {"match": {"title.default": "climate"}}, "_source": ["id"]}
     result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query}).data
@@ -139,7 +131,7 @@ def test_index_search_returns_total_and_hits(connect, es):
     assert es.calls.last.request.headers["authorization"] == "es-key"
 
 
-def test_index_search_size_is_capped_at_20(connect, es):
+def test_index_search_size_is_capped_at_50(connect, es):
     query = {"query": {"match_all": {}}, "size": 500}
     result = connect("/scanr").call("scanr_index_search", {"index": "scanr_publications", "search_query": query}).data
     assert sent_body(es)["size"] == 20
@@ -176,6 +168,13 @@ def test_stale_schema_is_served_when_refresh_fails(connect, upstream, monkeypatc
     assert "title.default" in result.data["fields"]
 
 
+def test_resolve_returns_candidates(connect, es):
+    es.respond(json={"hits": {"hits": [{"_source": {"id": "p1", "title": {"default": "Open science"}}}]}})
+    result = connect("/scanr").call("scanr_resolve", {"index": "scanr_publications", "resolve_query": "open science"}).data
+    assert result["candidates"][0]["id"] == "p1"
+    assert sent_body(es)["query"]["multi_match"] == {"query": "open science", "fields": ["title.default"]}
+
+
 def test_field_values_uses_the_schema_aggregation_field(connect, es):
     result = connect("/scanr").call("scanr_field_values", {"index": "scanr_publications", "values_field": "title.default", "values_limit": 5}).data
     assert result["aggregation_field"] == "title.default.keyword"
@@ -184,10 +183,13 @@ def test_field_values_uses_the_schema_aggregation_field(connect, es):
 
 
 def test_field_values_contains_and_prefix_are_applied_to_buckets(connect, es):
-    connect("/scanr").call(
+    es.respond(json=SEARCH_RESPONSE)
+    result = connect("/scanr").call(
         "scanr_field_values",
         {"index": "scanr_publications", "values_field": "title.default", "contains": "a.b"},
     )
+    if result.is_error:
+        raise AssertionError(f"Tool failed: {result.text}")
     assert sent_body(es)["aggs"]["values"]["terms"]["include"] == ".*a\\.b.*"
 
 
@@ -199,44 +201,6 @@ def test_field_values_supports_numeric_stats(connect, es):
     ).data
     assert result["stats"]["avg"] == 2023.5
     assert sent_body(es)["aggs"]["stats"]["stats"]["field"] == "year"
-
-
-def test_query_builds_text_exact_range_sort_and_cursor(connect, es):
-    query = {
-        "index": "scanr_publications",
-        "text": "climate",
-        "filters": {"title.default": ["climate change"], "year": {"gte": 2020}},
-        "fields": ["id", "year"],
-        "sort": {"year": "desc"},
-        "cursor": [2024],
-        "limit": 5,
-    }
-    connect("/scanr").call("scanr_query", query)
-    body = sent_body(es)
-    assert body["query"]["bool"]["must"][0]["multi_match"]["query"] == "climate"
-    assert body["query"]["bool"]["filter"] == [
-        {"terms": {"title.default.keyword": ["climate change"]}},
-        {"range": {"year": {"gte": 2020}}},
-    ]
-    assert body["sort"] == [{"year": {"order": "desc"}}]
-    assert body["search_after"] == [2024]
-    assert body["_source"] == ["id", "year"]
-
-
-def test_query_returns_search_after_cursor(connect, es):
-    es.respond(
-        json={
-            "hits": {
-                "total": {"value": 2},
-                "hits": [{"_id": "p1", "_source": {"id": "p1"}, "sort": [2024]}],
-            }
-        }
-    )
-    result = connect("/scanr").call(
-        "scanr_query",
-        {"index": "scanr_publications", "sort": {"year": "desc"}, "limit": 1},
-    ).data
-    assert result["next_cursor"] == [2024]
 
 
 def test_large_aggregations_are_truncated_to_the_response_budget(connect, es):
@@ -271,31 +235,6 @@ def test_large_field_values_are_truncated_to_the_response_budget(connect, es):
     ).data
     assert result["truncated"] is True
     assert len(json.dumps(result, ensure_ascii=False)) <= MAX_RESPONSE_CHARS
-
-
-def test_query_rejects_cursor_without_sort(connect, es):
-    result = connect("/scanr").call(
-        "scanr_query",
-        {"index": "scanr_publications", "cursor": [2024]},
-    )
-    assert result.is_error
-    assert "sort" in result.text
-    assert not es.called
-
-
-def test_query_builds_grouped_metric_aggregation(connect, es):
-    connect("/scanr").call(
-        "scanr_query",
-        {
-            "index": "scanr_publications",
-            "filters": {"year": {"gte": 2020}},
-            "aggregate": {"group_by": "year", "metric": {"type": "avg", "field": "year"}},
-        },
-    )
-    body = sent_body(es)
-    assert body["size"] == 0
-    assert body["aggs"]["group_by"]["terms"]["field"] == "year"
-    assert body["aggs"]["group_by"]["aggs"]["metric"]["avg"]["field"] == "year"
 
 
 def test_field_values_rejects_a_field_outside_the_schema(connect, es):

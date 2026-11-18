@@ -94,6 +94,10 @@ def _finalise(result: dict, notes: set[str]) -> dict:
     return result
 
 
+def _escape_lucene_regex(value: str) -> str:
+    return re.sub(r'([.+*?()|{}\[\]\\\"#@&<>~])', r"\\\1", value)
+
+
 async def index_field_values(
     index: str,
     field: str,
@@ -174,152 +178,6 @@ async def index_field_values(
     return _finalise(result, notes)
 
 
-def _escape_lucene_regex(value: str) -> str:
-    return re.sub(r'([.+*?()|{}\[\]\\\"#@&<>~])', r"\\\1", value)
-
-
-async def index_query(
-    index: str,
-    text: str | None = None,
-    filters: dict | None = None,
-    fields: list[str] | None = None,
-    sort: dict[str, str] | None = None,
-    limit: int = 10,
-    cursor: list | None = None,
-    aggregate: dict | None = None,
-) -> dict:
-    """Build and run a constrained search from structured scanR query options."""
-    if not 1 <= limit <= 50:
-        raise FastMCPError("limit must be between 1 and 50.")
-    if cursor is not None and not sort:
-        raise FastMCPError("cursor requires an explicit sort so search_after remains stable.")
-    if cursor is not None and aggregate:
-        raise FastMCPError("cursor cannot be combined with aggregation.")
-    if cursor is not None and not cursor:
-        raise FastMCPError("cursor must contain at least one sort value.")
-
-    raw_schema = await schema.index_get_base_schema(index)
-    declared_fields = raw_schema.get("fields", {})
-    bool_query: dict = {}
-
-    if text:
-        search_config = raw_schema.get("search", {})
-        text_fields = search_config.get("fields", [])
-        if not text_fields:
-            text_fields = [
-                name for name, metadata in declared_fields.items()
-                if not metadata.get("exclude", False) and metadata.get("type") == "text"
-            ]
-        if not text_fields:
-            raise FastMCPError(f"No searchable text fields are declared for {index}.")
-        bool_query["must"] = [{"multi_match": {"query": text, "fields": text_fields}}]
-
-    filter_clauses = []
-    for field, value in (filters or {}).items():
-        field_meta = schema.require_known_field(index, field, declared_fields)
-        if isinstance(value, dict):
-            if not value or set(value) - {"gte", "gt", "lte", "lt"}:
-                raise FastMCPError(f"Range filter for {field!r} must use gte, gt, lte or lt.")
-            if field_meta.get("type") not in {
-                "byte", "short", "integer", "long", "unsigned_long",
-                "half_float", "float", "double", "scaled_float", "date", "date_nanos",
-            }:
-                raise FastMCPError(f"Range filters require a numeric or date field; {field!r} is {field_meta.get('type')!r}.")
-            filter_clauses.append({"range": {field: value}})
-        elif isinstance(value, list):
-            if not value:
-                raise FastMCPError(f"Filter values for {field!r} cannot be empty.")
-            if field_meta.get("type") == "text" and not field_meta.get("has_keyword"):
-                raise FastMCPError(f"Exact filters require a keyword subfield for text field {field!r}.")
-            target = await index_get_aggregation_field(index, field) if field_meta.get("has_keyword") else field
-            filter_clauses.append({"terms": {target: value}})
-        elif value is not None:
-            if field_meta.get("type") == "text" and not field_meta.get("has_keyword"):
-                raise FastMCPError(f"Exact filters require a keyword subfield for text field {field!r}.")
-            target = await index_get_aggregation_field(index, field) if field_meta.get("has_keyword") else field
-            filter_clauses.append({"term": {target: value}})
-        else:
-            raise FastMCPError(f"Filter value for {field!r} cannot be null.")
-    if filter_clauses:
-        bool_query["filter"] = filter_clauses
-
-    query = {"bool": bool_query} if bool_query else {"match_all": {}}
-    body = {"query": query, "size": 0 if aggregate else limit}
-
-    if fields is not None and not aggregate:
-        if not fields:
-            raise FastMCPError("fields must contain at least one field.")
-        body["_source"] = fields
-    if sort:
-        sort_fields = []
-        for field, order in sort.items():
-            metadata = schema.require_known_field(index, field, declared_fields)
-            if order not in {"asc", "desc"}:
-                raise FastMCPError("Sort directions must be 'asc' or 'desc'.")
-            if metadata.get("type") == "text":
-                if not metadata.get("has_keyword"):
-                    raise FastMCPError(f"Text field {field!r} is not sortable according to the schema.")
-                field = await index_get_aggregation_field(index, field)
-            sort_fields.append({field: {"order": order}})
-        body["sort"] = sort_fields
-    if cursor is not None:
-        body["search_after"] = cursor
-    if aggregate:
-        body["aggs"] = await _build_aggregate(index, aggregate, declared_fields)
-
-    return await index_search(index, body)
-
-
-async def _build_aggregate(index: str, aggregate: dict, declared_fields: dict) -> dict:
-    if set(aggregate) - {"group_by", "metric"}:
-        raise FastMCPError("aggregate supports only group_by and metric.")
-    group_by = aggregate.get("group_by")
-    if isinstance(group_by, str):
-        group_by = [group_by]
-    if not isinstance(group_by, list) or not group_by or any(not isinstance(field, str) for field in group_by):
-        raise FastMCPError("aggregate.group_by must be a field name or a non-empty list of field names.")
-    metric = aggregate.get("metric", {"type": "count"})
-    if isinstance(metric, str):
-        metric = {"type": metric}
-    if not isinstance(metric, dict) or set(metric) - {"type", "field"}:
-        raise FastMCPError("aggregate.metric must be a metric name or an object with type and field.")
-    metric_type = metric.get("type", "count")
-    if metric_type not in {"count", "avg", "sum", "min", "max"}:
-        raise FastMCPError("Supported metrics are count, avg, sum, min and max.")
-    if metric_type == "count":
-        if metric.get("field"):
-            raise FastMCPError("The count metric counts documents; do not provide a metric field.")
-        if len(group_by) > 3:
-            raise FastMCPError("At most three group_by fields are supported.")
-    else:
-        metric_field = metric.get("field")
-        if not isinstance(metric_field, str):
-            raise FastMCPError(f"Metric {metric_type!r} requires a declared metric field.")
-        if len(group_by) > 2:
-            raise FastMCPError("At most two group_by fields are supported with a metric.")
-        metric_meta = schema.require_known_field(index, metric_field, declared_fields)
-        numeric_types = {
-            "byte", "short", "integer", "long", "unsigned_long",
-            "half_float", "float", "double", "scaled_float",
-        }
-        date_types = {"date", "date_nanos"}
-        valid_types = numeric_types | date_types if metric_type in {"min", "max"} else numeric_types
-        if metric_meta.get("type") not in valid_types:
-            required_types = "numeric or date" if metric_type in {"min", "max"} else "numeric"
-            raise FastMCPError(f"Metric field {metric_field!r} must be {required_types}.")
-        metric_field = await index_get_aggregation_field(index, metric_field)
-
-    aggregation = {}
-    current = aggregation
-    for level, field in enumerate(group_by, start=1):
-        aggregation_field = await index_get_aggregation_field(index, field)
-        name = "group_by" if level == 1 else f"group_by_{level}"
-        node = {"terms": {"field": aggregation_field, "size": 100}}
-        current[name] = node  # ty: ignore[invalid-assignment]
-        current = node.setdefault("aggs", {})
-    if metric_type != "count":
-        current["metric"] = {metric_type: {"field": metric_field}}  # ty: ignore[invalid-assignment]
-    return aggregation
 
 
 async def index_search(index: str, query_body: dict) -> dict:
