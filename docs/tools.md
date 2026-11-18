@@ -130,7 +130,7 @@ Builds a guarded Elasticsearch query from structured parameters. `filters` accep
 
 ### `scanr_index_search`
 
-Runs an Elasticsearch request body against one index. At most 20 hits are returned, and `_source` defaults to the index's primary fields. Requests are checked before they are sent: only top-level keys such as `query`, `aggs`, `sort`, `size` and `from` are accepted, `script`, `runtime_mappings`, `scroll` and `pit` are refused, `from + size` is limited to 1000, aggregation nesting to 3 levels and bucket sizes to 100, and unknown field names are rejected with a suggestion. Each value that was changed is reported under `clamped` (for example `"size_capped_from": 500`). Long strings and lists are truncated, and `truncated: true` with a hint appears when the response is cut to fit its size budget. For counts and distributions, set `size` to 0 and use `aggs`.
+Runs an Elasticsearch request body against one index. At most 50 hits are returned, and `_source` defaults to the index's primary fields. Requests are checked before they are sent: only top-level keys such as `query`, `aggs`, `sort`, `size` and `from` are accepted, `script`, `runtime_mappings`, `scroll` and `pit` are refused, `from + size` is limited to 1000, aggregation nesting to 3 levels and bucket sizes to 100, and unknown field names are rejected with a suggestion. Each value that was changed is reported under `clamped` (for example `"size_capped_from": 500`). Long strings and lists are truncated, and `truncated: true` with a hint appears when the response is cut to fit its size budget. For counts and distributions, set `size` to 0 and use `aggs`.
 
 Publications per year:
 

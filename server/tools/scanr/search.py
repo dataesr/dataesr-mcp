@@ -11,7 +11,7 @@ from tools.scanr.schema import index_get_aggregation_field, index_known_fields, 
 logger = get_logger(__name__)
 
 MAX_STRING_CHARS = 300
-MAX_LIST_ITEMS = 20
+MAX_LIST_ITEMS = 50
 MAX_RESPONSE_CHARS = 60_000
 
 
@@ -97,7 +97,7 @@ def _finalise(result: dict, notes: set[str]) -> dict:
 async def index_field_values(
     index: str,
     field: str,
-    limit: int = 20,
+    limit: int = 50,
     filter_query: dict | None = None,
     contains: str | None = None,
     prefix: str | None = None,
@@ -189,8 +189,8 @@ async def index_query(
     aggregate: dict | None = None,
 ) -> dict:
     """Build and run a constrained search from structured scanR query options."""
-    if not 1 <= limit <= 20:
-        raise FastMCPError("limit must be between 1 and 20.")
+    if not 1 <= limit <= 50:
+        raise FastMCPError("limit must be between 1 and 50.")
     if cursor is not None and not sort:
         raise FastMCPError("cursor requires an explicit sort so search_after remains stable.")
     if cursor is not None and aggregate:

@@ -117,7 +117,7 @@ def register(mcp: FastMCP):
 
     @mcp.tool(
         name="scanr_index_search",
-        description="Execute a raw Elasticsearch request against one scanR index. Use only fields from scanr_get_schema. Hits are capped at 20 and _source defaults to primary fields.",
+        description="Execute a raw Elasticsearch request against one scanR index. Use only fields from scanr_get_schema. Hits are capped at 50 and _source defaults to primary fields.",
     )
     async def scanr_index_search(index: ScanrIndex, search_query: dict) -> dict:
         """Execute an Elasticsearch query against the selected scanR index."""
@@ -139,8 +139,10 @@ def register(mcp: FastMCP):
             dict[str, Literal["asc", "desc"]] | None,
             Field(description="Sort fields mapped to asc or desc. Required when using cursor."),
         ] = None,
-        limit: Annotated[int, Field(ge=1, le=20, description="Number of hits, from 1 to 20.")] = 10,
-        cursor: Annotated[list | None, Field(description="search_after values returned as next_cursor by the previous page.")] = None,
+        limit: Annotated[int, Field(ge=1, le=50, description="Number of hits, from 1 to 50.")] = 10,
+        cursor: Annotated[
+            list | None, Field(description="search_after values returned as next_cursor by the previous page.")
+        ] = None,
         aggregate: Annotated[
             dict | None,
             Field(description="Optional {group_by: field or fields, metric: count or {type, field}} aggregation."),
