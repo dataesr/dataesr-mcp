@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from helpers.elastic import es_search
@@ -141,7 +141,7 @@ def register(mcp: FastMCP):
         ] = None,
         limit: Annotated[int, Field(ge=1, le=50, description="Number of hits, from 1 to 50.")] = 10,
         cursor: Annotated[
-            list | None, Field(description="search_after values returned as next_cursor by the previous page.")
+            list[Any] | None, Field(description="search_after values returned as next_cursor by the previous page.")
         ] = None,
         aggregate: Annotated[
             dict | None,
